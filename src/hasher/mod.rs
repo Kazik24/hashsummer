@@ -1,0 +1,159 @@
+mod file_iter;
+mod names;
+mod runner;
+mod sum_file;
+
+use digest::{Digest, FixedOutputReset};
+use std::{
+    cmp::Ordering,
+    fmt::{Debug, LowerHex, UpperHex},
+    mem::size_of,
+};
+
+pub type DataChunk = u64;
+
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+#[repr(align(8))]
+pub struct HashArray<const N: usize> {
+    array: [u8; N],
+}
+
+impl<const N: usize> HashArray<N> {
+    pub const fn zero() -> Self {
+        Self { array: [0; N] }
+    }
+
+    pub const fn get_ref(&self) -> &[u8; N] {
+        &self.array
+    }
+    pub fn get_mut(&mut self) -> &mut [u8; N] {
+        &mut self.array
+    }
+
+    // todo little and big endians might get confused when writing bytes here on different platforms, and then comparing HashArray's
+    pub fn as_bytes(&self) -> &[u8] {
+        self.array.as_slice()
+    }
+    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
+        self.array.as_mut_slice()
+    }
+}
+
+impl<const N: usize> LowerHex for HashArray<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for d in self.array.iter().rev() {
+            write!(f, "{:02x}", d)?;
+        }
+        Ok(())
+    }
+}
+
+impl<const N: usize> UpperHex for HashArray<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for d in self.array.iter().rev() {
+            write!(f, "{:02x}", d)?;
+        }
+        Ok(())
+    }
+}
+
+impl<const N: usize> Debug for HashArray<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:x}", self)
+    }
+}
+
+impl<const N: usize> PartialOrd for HashArray<N> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<const N: usize> Ord for HashArray<N> {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        let (_, a, _) = unsafe { self.array.align_to::<DataChunk>() };
+        let (_, b, _) = unsafe { other.array.align_to::<DataChunk>() };
+        assert_eq!(a.len(), b.len());
+        let len = self.array.len() / size_of::<DataChunk>();
+        assert_eq!(a.len(), len);
+
+        for i in (0..len).rev() {
+            unsafe {
+                let a = DataChunk::from_le(*a.get_unchecked(i));
+                let b = DataChunk::from_le(*b.get_unchecked(i));
+                let res = a.cmp(&b);
+                if res.is_ne() {
+                    return res;
+                }
+            }
+        }
+        Ordering::Equal
+    }
+}
+
+//entries that are easy sortable
+#[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash, Debug)]
+pub struct HashEntry<const ID: usize, const DATA: usize> {
+    pub id: HashArray<ID>,     //for file name hash (full or relative path)
+    pub data: HashArray<DATA>, //for file content hash
+}
+
+impl<const ID: usize, const DATA: usize> HashEntry<ID, DATA> {
+    pub fn zero() -> Self {
+        Self {
+            id: HashArray::zero(),
+            data: HashArray::zero(),
+        }
+    }
+}
+
+pub fn sort_by_id<const ID: usize, const DATA: usize>(array: &mut [HashEntry<ID, DATA>]) {
+    //sort first by name, then by content
+    array.sort_unstable()
+}
+
+pub trait HashDigest {
+    type Output;
+    fn new() -> Self;
+    fn update(&mut self, array: &[u8]);
+    fn finish(&self, output: &mut Self::Output);
+    fn finish_reset(&mut self, output: &mut Self::Output);
+}
+
+pub trait Consumer {
+    fn consume(&self, value: HashEntry<32, 32>);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HashArray;
+    use crate::hasher::HashEntry;
+
+    #[test]
+    fn test_array() {
+        let mut array = HashArray::<4>::zero();
+
+        array.as_bytes_mut()[1] = 1;
+
+        println!("Arr: {:?}", array);
+    }
+    #[test]
+    fn test_eq() {
+        let mut a = HashArray::<32>::zero();
+        let mut b = HashArray::<32>::zero();
+
+        assert_eq!(a, b);
+        a.as_bytes_mut()[0] = 1;
+        assert!(a > b);
+        b.as_bytes_mut()[7] = 1;
+        assert!(a < b);
+        a.as_bytes_mut()[8] = 1;
+        assert!(a > b);
+        b.as_bytes_mut()[15] = 1;
+        assert!(a < b);
+        a.as_bytes_mut()[17] = 1;
+        assert!(a > b);
+    }
+}
