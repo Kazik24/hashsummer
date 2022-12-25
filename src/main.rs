@@ -1,8 +1,6 @@
 #![allow(unused)]
-extern crate core;
 
-//#![deny(unsafe_code)]
-mod hasher;
+use hashsummer::*;
 
 fn main() {
     println!("Hello, world!");

@@ -58,6 +58,7 @@ mod tests {
     use crate::hasher::runner::HashRunner;
     use crate::hasher::sum_file::{read_vec_bytes, write_vec_bytes};
     use crate::hasher::{Consumer, HashEntry};
+    use crate::EMPTY_SHA256;
     use flate2::Compression;
     use parking_lot::Mutex;
     use sha2::Sha256;
@@ -125,6 +126,10 @@ mod tests {
         println!("first: {:?}", vals.first().unwrap());
         println!("last:  {:?}", vals.last().unwrap());
         write_vec_bytes("hashes.hsum", &vals);
+        println!("Empty hash: {:?}", EMPTY_SHA256);
+        for val in vals.iter() {
+            println!("{val:?}");
+        }
     }
 
     #[test]
@@ -138,11 +143,16 @@ mod tests {
         println!("last:  {:?}", vals.last().unwrap());
 
         let mut dupes = HashMap::new();
+        let mut empty = Vec::new();
         for e in &vals {
+            if e.data == EMPTY_SHA256 {
+                empty.push(e);
+            }
             dupes.entry(e.data).or_insert_with(Vec::new).push(e.id);
         }
         let mut dupes = dupes.into_iter().filter(|(_, v)| v.len() > 1).collect::<Vec<_>>();
         dupes.sort_unstable();
+        println!("Empty files: {}", empty.len());
         println!("Duplicates: {}", dupes.len());
         let dc = dupes.iter().map(|(_, v)| v.len()).collect::<Vec<_>>();
         println!("Sizes: [max: {}] {:?}", dc.iter().reduce(|a, b| a.max(b)).unwrap_or(&0), dc);

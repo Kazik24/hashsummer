@@ -22,6 +22,40 @@ impl<const N: usize> HashArray<N> {
     pub const fn zero() -> Self {
         Self { array: [0; N] }
     }
+    pub const fn new(array: [u8; N]) -> Self {
+        Self { array }
+    }
+
+    pub const fn parse_hex(val: &str, big_endian: bool) -> Self {
+        let mut i = 0;
+        let val = val.as_bytes();
+        let mut array = [0u8; N];
+        while i < N {
+            let num = (Self::hex_digit(val[i * 2]) << 4) | Self::hex_digit(val[i * 2 + 1]);
+            if big_endian {
+                array[N - i - 1] = num;
+            } else {
+                array[i] = num;
+            }
+            i += 1;
+        }
+        Self { array }
+    }
+
+    const fn hex_digit(b: u8) -> u8 {
+        match Self::match_hex_digit(b) {
+            Ok(v) => v,
+            Err(_) => panic!("Cannot parse hex digit"),
+        }
+    }
+    const fn match_hex_digit(b: u8) -> Result<u8, u8> {
+        match b {
+            b'0'..=b'9' => Ok(b - b'0'),
+            b'a'..=b'f' => Ok(b - b'a' + 10),
+            b'A'..=b'F' => Ok(b - b'A' + 10),
+            v => Err(v),
+        }
+    }
 
     pub const fn get_ref(&self) -> &[u8; N] {
         &self.array
@@ -128,8 +162,10 @@ pub trait Consumer {
 
 #[cfg(test)]
 mod tests {
-    use super::HashArray;
-    use crate::hasher::HashEntry;
+    use super::*;
+    use crate::*;
+
+    const MODEL_EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
     #[test]
     fn test_array() {
@@ -139,10 +175,19 @@ mod tests {
 
         println!("Arr: {:?}", array);
     }
+
     #[test]
     fn test_eq() {
         let mut a = HashArray::<32>::zero();
         let mut b = HashArray::<32>::zero();
+
+        let val = EMPTY_SHA256;
+
+        let parsed = HashArray::<32>::parse_hex(MODEL_EMPTY_SHA256, false);
+
+        println!("Empty hash: {:x}", EMPTY_SHA256);
+
+        assert_eq!(parsed, EMPTY_SHA256, "Empty hashes differ");
 
         assert_eq!(a, b);
         a.as_bytes_mut()[0] = 1;
