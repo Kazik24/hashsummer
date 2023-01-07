@@ -1,4 +1,5 @@
 use crossbeam::channel::{bounded, Receiver, Sender};
+use std::any::Any;
 use std::fs::File;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{spawn, JoinHandle, Thread};
@@ -41,6 +42,21 @@ struct InnerConfig {
     chunk_size: usize, //init chunk size
 }
 
+fn pool_panic_handler(payload: Box<dyn Any + Send>) {
+    println!("Rayon thread panicked \"{}\"", format_panic_msg(&payload));
+}
+
+fn format_panic_msg(payload: &Box<dyn std::any::Any + Send>) -> String {
+    match payload.downcast_ref::<&'static str>() {
+        Some(msg) => msg.to_string(),
+        None => match payload.downcast_ref::<String>() {
+            Some(msg) => msg.to_string(),
+            // Copy what rustc does in the default panic handler
+            None => format!("{payload:?}"),
+        },
+    }
+}
+
 impl HashRunner {
     pub fn run<I, H: Digest, C: Consumer + Send + Sync + 'static>(files: I, consume: Arc<C>, permits: usize) -> Self
     where
@@ -53,8 +69,16 @@ impl HashRunner {
         }
 
         let c = Arc::new(InnerConfig {
-            worker_pool: ThreadPoolBuilder::new().num_threads(16).build().unwrap(),
-            reader_pool: ThreadPoolBuilder::new().num_threads(16).build().unwrap(),
+            worker_pool: ThreadPoolBuilder::new()
+                .num_threads(16)
+                .panic_handler(pool_panic_handler)
+                .build()
+                .unwrap(),
+            reader_pool: ThreadPoolBuilder::new()
+                .num_threads(16)
+                .panic_handler(pool_panic_handler)
+                .build()
+                .unwrap(),
             chunk_size: 1024 * 256,
             chan_bound: 32,
             flag: AtomicBool::new(true),
@@ -115,7 +139,11 @@ impl HashRunner {
             let size = cfg.c.chunk_size;
             let file2 = file.clone();
             cfg.c.reader_pool.spawn_fifo(move || {
-                Self::read_file(file, supply, tx, size).expect("Error reading file");
+                let res = Self::read_file(file, supply, tx, size);
+                if let Err(res) = res {
+                    //todo save file errors in some list
+                    println!("Error reading file {res}");
+                }
             });
             let consumer = cfg.consumer.clone();
             let recycle = cfg.c.data_chunks_recycle.clone();
@@ -134,7 +162,7 @@ impl HashRunner {
             if chunk.capacity() < chunk_size {
                 chunk = ChunkData::new(chunk_size)
             }
-            let end = !chunk.read_from(&mut file)?;
+            let end = !chunk.read_from(&mut file)?; //todo error handling
             dout.send(chunk).unwrap(); //cant disconnect first
             if end {
                 return Ok(());
@@ -185,7 +213,7 @@ impl ChunkData {
         }
     }
 
-    /// Read as mutch bytes as possible to fill this chunk, discards old content
+    /// Read as much bytes as possible to fill this chunk, discards old content
     pub fn read_from<R: Read>(&mut self, reader: &mut R) -> Result<bool, std::io::Error> {
         self.length = 0;
         let mut buf = &mut *self.array;

@@ -4,11 +4,17 @@ mod runner;
 mod sum_file;
 
 use digest::{Digest, FixedOutputReset};
+use std::ops::Index;
 use std::{
     cmp::Ordering,
     fmt::{Debug, LowerHex, UpperHex},
     mem::size_of,
 };
+
+pub use file_iter::*;
+pub use names::*;
+pub use runner::*;
+pub use sum_file::*;
 
 pub type DataChunk = u64;
 
@@ -62,6 +68,17 @@ impl<const N: usize> HashArray<N> {
     }
     pub fn get_mut(&mut self) -> &mut [u8; N] {
         &mut self.array
+    }
+
+    pub fn top_bits(&self) -> u64 {
+        const BYTES: usize = size_of::<u64>();
+        if N >= BYTES {
+            u64::from_le_bytes(self.array[(N - BYTES)..].try_into().unwrap())
+        } else {
+            let mut array = [0u8; BYTES];
+            array[..N].copy_from_slice(&self.array);
+            u64::from_le_bytes(array)
+        }
     }
 
     // todo little and big endians might get confused when writing bytes here on different platforms, and then comparing HashArray's
@@ -174,6 +191,19 @@ mod tests {
         array.as_bytes_mut()[1] = 1;
 
         println!("Arr: {:?}", array);
+    }
+
+    #[test]
+    fn test_top_bits() {
+        let mut arr = HashArray::<16>::zero();
+        arr.as_bytes_mut()[1] = 3;
+        arr.as_bytes_mut()[8] = 8;
+        arr.as_bytes_mut()[9] = 1;
+        assert_eq!(arr.top_bits(), 264);
+        let mut arr = HashArray::<3>::zero();
+        arr.as_bytes_mut()[0] = 3;
+        arr.as_bytes_mut()[1] = 6;
+        assert_eq!(arr.top_bits(), 1539);
     }
 
     #[test]

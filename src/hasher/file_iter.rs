@@ -1,30 +1,46 @@
+use crate::{BungeeIndex, BungeeStr};
 use compress::bwt::*;
 use flate2::Compression;
-use std::fs::{read_dir, DirEntry, ReadDir};
+use std::ffi::OsString;
+use std::fs::{read_dir, DirEntry, FileType, ReadDir};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct DepthFileIter {
+    root: PathBuf,
+    current: Vec<OsString>,
     stack: Vec<ReadDir>,
 }
 
 impl DepthFileIter {
-    pub fn from_dir<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
-        Ok(Self {
-            stack: vec![read_dir(path)?],
-        })
+    pub fn from_dir<P: AsRef<Path>>(path: P) -> Self {
+        let path = path.as_ref();
+        let mut buf = path.to_path_buf();
+        Self {
+            root: path.to_path_buf(),
+            current: Vec::new(),
+            stack: read_dir(path).ok().into_iter().collect(),
+        }
+    }
+
+    pub fn save_to_bungee(self, bungee: &mut BungeeStr) -> SaveToBungee {
+        SaveToBungee {
+            it: self,
+            bungee,
+            dirs: Vec::new(),
+        }
     }
 }
 
-pub fn depth_first_files<P: AsRef<Path>>(path: P) -> std::io::Result<DepthFileIter> {
+pub fn depth_first_files<P: AsRef<Path>>(path: P) -> DepthFileIter {
     DepthFileIter::from_dir(path)
 }
 
 impl Iterator for DepthFileIter {
-    type Item = DirEntry;
+    type Item = (DirEntry, FileType);
 
     fn next(&mut self) -> Option<Self::Item> {
-        'outer: loop {
+        loop {
             let iter = self.stack.last_mut()?;
             while let Some(elem) = iter.next() {
                 let Ok(elem) = elem else { continue; };
@@ -32,13 +48,70 @@ impl Iterator for DepthFileIter {
                 if fty.is_dir() {
                     if let Ok(iter) = read_dir(elem.path()) {
                         self.stack.push(iter);
-                        continue 'outer;
                     }
                 }
-                return Some(elem);
+                return Some((elem, fty));
             }
             self.stack.pop();
         }
+    }
+}
+
+pub struct SaveToBungee<'a> {
+    it: DepthFileIter,
+    dirs: Vec<Option<BungeeIndex>>,
+    bungee: &'a mut BungeeStr,
+}
+
+impl Iterator for SaveToBungee<'_> {
+    type Item = (Option<BungeeIndex>, FileType);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let iter = self.it.stack.last_mut()?;
+            let prev = self.dirs.last().copied().flatten();
+            while let Some(elem) = iter.next() {
+                let Ok(elem) = elem else { continue; };
+                let Ok(fty) = elem.file_type() else { continue; };
+                let value = self.bungee.push(prev, elem.file_name().to_string_lossy().as_ref());
+                if fty.is_dir() {
+                    if let Ok(iter) = read_dir(elem.path()) {
+                        self.it.stack.push(iter);
+                        self.dirs.push(value);
+                    }
+                }
+                return Some((value, fty));
+            }
+            self.it.stack.pop();
+            self.dirs.pop();
+        }
+
+        // loop{
+        //     let stack_size = self.it.stack.len();
+        //     let (entry,ty) = self.it.next()?;
+        //     let popped = self.it.stack.len() < stack_size;
+        //     let name = entry.file_name();
+        //     let prev = self.dirs.last().copied();
+        //     let interned = self.bungee.push(prev,name.to_string_lossy().as_ref());
+        //     let Some(interned) = interned else { continue; };
+        //     if ty.is_dir() {
+        //         if popped {
+        //             for _ in 0..(stack_size - self.it.stack.len()) {
+        //                 self.dirs.pop();
+        //             }
+        //         }
+        //
+        //         self.dirs.pop();
+        //         self.dirs.push(interned);
+        //     }else{
+        //         if popped {
+        //             for _ in 0..(stack_size - self.it.stack.len()) {
+        //                 self.dirs.pop();
+        //             }
+        //         }
+        //     }
+        //     return Some((interned,ty));
+        // }
     }
 }
 
@@ -54,11 +127,7 @@ fn compress_text(text: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hasher::names::{FileNames, FlatedFileNames, NamesStorage};
-    use crate::hasher::runner::HashRunner;
-    use crate::hasher::sum_file::{read_vec_bytes, write_vec_bytes};
-    use crate::hasher::{Consumer, HashEntry};
-    use crate::EMPTY_SHA256;
+    use crate::*;
     use flate2::Compression;
     use parking_lot::Mutex;
     use sha2::Sha256;
@@ -68,7 +137,7 @@ mod tests {
     use std::mem::size_of_val;
     use std::sync::Arc;
     use std::thread::sleep;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use std::{
         mem::size_of,
         path::{Path, PathBuf},
@@ -80,7 +149,9 @@ mod tests {
     fn test_list_files() {
         let path = Path::new(".");
 
-        let paths = depth_first_files(path).unwrap().map(|d| d.path().to_string_lossy().into_owned());
+        let paths = depth_first_files(path)
+            .filter(|(_, ty)| ty.is_file())
+            .map(|(d, _)| d.path().to_string_lossy().into_owned());
         let mut names = FlatedFileNames::new(Compression::best());
         let ids = names.with_collected(paths).collect::<Vec<_>>();
         println!("Count: {}", ids.len());
@@ -102,7 +173,7 @@ mod tests {
         let path = Path::new("test_files");
 
         println!("Scanning path: {:?}", path);
-        let paths = depth_first_files(path).unwrap().map(|d| d.path());
+        let paths = depth_first_files(path).filter(|(_, ty)| ty.is_file()).map(|(d, _)| d.path());
 
         #[derive(Default)]
         struct Cons(Mutex<Vec<HashEntry<32, 32>>>);
@@ -113,12 +184,12 @@ mod tests {
         }
         let cons = Arc::new(Cons::default());
 
-        let runner = HashRunner::run::<_, Sha256, _>(paths, cons.clone(), 128);
+        let runner = HashRunner::run::<_, Sha256, _>(paths.into_iter(), cons.clone(), 128);
         //sleep(Duration::from_secs(5));
         runner.wait_for_finish();
 
         let mut vals = cons.0.lock();
-        println!("Vals: {}", vals.len());
+        println!("Processed: {}", vals.len());
         let bytes = size_of_val(vals.as_slice()) as f64 / (1024.0 * 1024.0);
         println!("Memory taken: {bytes:.3}Mb");
 
@@ -142,6 +213,7 @@ mod tests {
         println!("first: {:?}", vals.first().unwrap());
         println!("last:  {:?}", vals.last().unwrap());
 
+        let start = Instant::now();
         let mut dupes = HashMap::new();
         let mut empty = Vec::new();
         for e in &vals {
@@ -150,6 +222,16 @@ mod tests {
             }
             dupes.entry(e.data).or_insert_with(Vec::new).push(e.id);
         }
+
+        let mut top_bits = HashMap::new();
+        for a in &vals {
+            let val = a.id.top_bits();
+            let v = top_bits.entry(val >> 32).or_insert(0);
+            *v += 1;
+        }
+        let same_top = top_bits.into_iter().filter(|v| v.1 > 1).map(|v| v.0).collect::<Vec<_>>();
+        println!("Same top bits: {:?}", same_top);
+
         let mut dupes = dupes.into_iter().filter(|(_, v)| v.len() > 1).collect::<Vec<_>>();
         dupes.sort_unstable();
         println!("Empty files: {}", empty.len());
@@ -159,5 +241,26 @@ mod tests {
         // for (data, names) in dupes {
         //     println!("data: {data:?} names: {names:?}");
         // }
+
+        println!("Calc time {:.3?}", start.elapsed());
+    }
+
+    #[test]
+    fn test_save_bungee() {
+        let path = Path::new("test_files");
+
+        println!("Scanning path: {:?}", path);
+        let mut bungee = BungeeStr::new();
+        let paths = depth_first_files(path)
+            .save_to_bungee(&mut bungee)
+            .filter_map(|(i, ty)| ty.is_file().then_some(i))
+            .flatten()
+            .collect::<Vec<_>>();
+
+        println!("Paths: {:?}", paths);
+
+        let names = paths.iter().map(|v| bungee.path_of("/", *v)).collect::<Vec<_>>();
+        println!("Recovered paths: {:#?}", names);
+        println!("Bungee size: {}", bungee.raw_bytes().len());
     }
 }
