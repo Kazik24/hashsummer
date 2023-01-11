@@ -4,6 +4,7 @@ mod runner;
 mod sum_file;
 
 use digest::{Digest, FixedOutputReset};
+use std::mem::{align_of, transmute};
 use std::ops::Index;
 use std::{
     cmp::Ordering,
@@ -23,6 +24,23 @@ pub type DataChunk = u64;
 pub struct HashArray<const N: usize> {
     array: [u8; N],
 }
+
+const _: () = {
+    assert!(size_of::<HashArray<32>>() == 32);
+    assert!(align_of::<HashArray<32>>() >= align_of::<DataChunk>());
+    // assert correct transmute layout when converting to byte array
+    // bytes 0 to 31 must containt id field
+    // bytest 32 to 63 must containt data field
+    // this ensures that vector of HashEntry<32,32> can be written exactly as bytes to file
+    let mut a = HashEntry::<32, 32>::zero();
+    a.id.array[0] = 1;
+    a.data.array[0] = 2;
+    let array = unsafe { transmute::<_, [u8; 64]>(a) };
+    assert!(array[0] == 1);
+    assert!(array[32] == 2);
+    assert!(array[63] == 0);
+    assert!(array[31] == 0);
+};
 
 impl<const N: usize> HashArray<N> {
     pub const fn zero() -> Self {
@@ -60,6 +78,16 @@ impl<const N: usize> HashArray<N> {
             b'a'..=b'f' => Ok(b - b'a' + 10),
             b'A'..=b'F' => Ok(b - b'A' + 10),
             v => Err(v),
+        }
+    }
+
+    pub fn parse_fill_zero(value: &str) -> Self {
+        if value.len() < N * 2 {
+            let mut s = "0".repeat(N * 2 - value.len());
+            s.push_str(value);
+            Self::parse_hex(&s, false)
+        } else {
+            Self::parse_hex(value, false)
         }
     }
 
@@ -146,13 +174,14 @@ impl<const N: usize> Ord for HashArray<N> {
 
 //entries that are easy sortable
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash, Debug)]
+#[repr(C)]
 pub struct HashEntry<const ID: usize, const DATA: usize> {
     pub id: HashArray<ID>,     //for file name hash (full or relative path)
     pub data: HashArray<DATA>, //for file content hash
 }
 
 impl<const ID: usize, const DATA: usize> HashEntry<ID, DATA> {
-    pub fn zero() -> Self {
+    pub const fn zero() -> Self {
         Self {
             id: HashArray::zero(),
             data: HashArray::zero(),

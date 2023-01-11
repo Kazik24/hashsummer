@@ -1,7 +1,8 @@
 use crate::{BungeeIndex, BungeeStr};
 use compress::bwt::*;
 use flate2::Compression;
-use std::ffi::OsString;
+use std::borrow::Cow;
+use std::ffi::{OsStr, OsString};
 use std::fs::{read_dir, DirEntry, FileType, ReadDir};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -22,12 +23,15 @@ impl DepthFileIter {
             stack: read_dir(path).ok().into_iter().collect(),
         }
     }
-
-    pub fn save_to_bungee(self, bungee: &mut BungeeStr) -> SaveToBungee {
+    pub fn save_to_bungee<F>(self, bungee: &mut BungeeStr, conv: F) -> SaveToBungee<F>
+    where
+        F: FnMut(&OsStr) -> Option<Cow<'_, str>>,
+    {
         SaveToBungee {
             it: self,
             bungee,
             dirs: Vec::new(),
+            name_convert: conv,
         }
     }
 }
@@ -57,14 +61,18 @@ impl Iterator for DepthFileIter {
     }
 }
 
-pub struct SaveToBungee<'a> {
+pub struct SaveToBungee<'a, F> {
     it: DepthFileIter,
     dirs: Vec<Option<BungeeIndex>>,
     bungee: &'a mut BungeeStr,
+    name_convert: F,
 }
 
-impl Iterator for SaveToBungee<'_> {
-    type Item = (Option<BungeeIndex>, FileType);
+impl<F> Iterator for SaveToBungee<'_, F>
+where
+    F: FnMut(&OsStr) -> Option<Cow<'_, str>>,
+{
+    type Item = (Option<BungeeIndex>, DirEntry, FileType);
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -73,54 +81,34 @@ impl Iterator for SaveToBungee<'_> {
             while let Some(elem) = iter.next() {
                 let Ok(elem) = elem else { continue; };
                 let Ok(fty) = elem.file_type() else { continue; };
-                let value = self.bungee.push(prev, elem.file_name().to_string_lossy().as_ref());
+                let name = elem.file_name();
+                let Some(name) = (self.name_convert)(&name) else { continue; };
+                let value = self.bungee.push(prev, name.as_ref());
                 if fty.is_dir() {
                     if let Ok(iter) = read_dir(elem.path()) {
                         self.it.stack.push(iter);
                         self.dirs.push(value);
                     }
                 }
-                return Some((value, fty));
+                return Some((value, elem, fty));
             }
             self.it.stack.pop();
             self.dirs.pop();
         }
-
-        // loop{
-        //     let stack_size = self.it.stack.len();
-        //     let (entry,ty) = self.it.next()?;
-        //     let popped = self.it.stack.len() < stack_size;
-        //     let name = entry.file_name();
-        //     let prev = self.dirs.last().copied();
-        //     let interned = self.bungee.push(prev,name.to_string_lossy().as_ref());
-        //     let Some(interned) = interned else { continue; };
-        //     if ty.is_dir() {
-        //         if popped {
-        //             for _ in 0..(stack_size - self.it.stack.len()) {
-        //                 self.dirs.pop();
-        //             }
-        //         }
-        //
-        //         self.dirs.pop();
-        //         self.dirs.push(interned);
-        //     }else{
-        //         if popped {
-        //             for _ in 0..(stack_size - self.it.stack.len()) {
-        //                 self.dirs.pop();
-        //             }
-        //         }
-        //     }
-        //     return Some((interned,ty));
-        // }
     }
 }
 
-fn compress_text(text: &[u8]) -> Vec<u8> {
-    // let mut enc = Encoder::new(Vec::new(),4 << 20);
-    // enc.write(text);
-    // let vec: Vec<u8> = enc.finish().0;
+fn compress_text(text: &[u8], use_burrows_wheeler: bool) -> Vec<u8> {
+    let transform = if use_burrows_wheeler {
+        let mut enc = Encoder::new(Vec::new(), 4 << 20);
+        enc.write_all(text);
+        Some(enc.finish().0)
+    } else {
+        None
+    };
+    let text = transform.as_deref().unwrap_or(text);
     let mut zip = flate2::write::DeflateEncoder::new(Vec::new(), Compression::best());
-    zip.write(text).unwrap();
+    zip.write_all(text).unwrap();
     zip.flush_finish().unwrap()
 }
 
@@ -247,20 +235,24 @@ mod tests {
 
     #[test]
     fn test_save_bungee() {
-        let path = Path::new("test_files");
+        let path = Path::new(".");
 
         println!("Scanning path: {:?}", path);
         let mut bungee = BungeeStr::new();
+        let mut path_len = 0;
         let paths = depth_first_files(path)
-            .save_to_bungee(&mut bungee)
-            .filter_map(|(i, ty)| ty.is_file().then_some(i))
-            .flatten()
+            .save_to_bungee(&mut bungee, |n| Some(n.to_string_lossy()))
+            .inspect(|v| path_len += v.1.path().as_os_str().len())
+            .filter_map(|(i, _, ty)| ty.is_file().then_some(i).flatten())
             .collect::<Vec<_>>();
 
         println!("Paths: {:?}", paths);
-
         let names = paths.iter().map(|v| bungee.path_of("/", *v)).collect::<Vec<_>>();
         println!("Recovered paths: {:#?}", names);
         println!("Bungee size: {}", bungee.raw_bytes().len());
+
+        let compressed = compress_text(bungee.raw_bytes(), false);
+        println!("Bungee size after compression: {}", compressed.len());
+        println!("total paths len: {}", path_len);
     }
 }

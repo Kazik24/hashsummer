@@ -176,29 +176,82 @@ impl_fixed_int!(u8, u16, u32, u64, usize);
 
 type NAME = usize;
 
+//Variable size integer, that can be read in reverse order
+// 1. 0b0xxx_xxxx - value of range from 0 to 127 (7 data bits)
+// 2. 0b1xxx_xxxx 0b1xxx_xxxx (two bytes, 14 data bits)
+// 3. 0b1xxx_xxxx (any number of 0b0xxx_xxxx ) 0b1xxx_xxxx (3 or more bytes, >= 21 data bits)
+
+fn msb_bit(value: u8) -> bool {
+    value & MSB_BIT != 0
+}
+
+const DATA_MASK: u8 = 0x7f;
+const MSB_BIT: u8 = 0x80;
+
+//todo tests
 impl OffsetInt for VarInt<NAME> {
     const MAX_BYTES: usize = size_of::<NAME>() + 1;
 
     fn reverse_read(data: &[u8]) -> (Self, usize) {
-        todo!()
-    }
-
-    fn read(data: &[u8]) -> (Self, usize) {
-        let mut value = 0;
-        let mut count = 0;
-        while count < Self::MAX_BYTES {
-            let byte = data[count];
-            value |= ((byte & 0x7f) as NAME) << (count * 7);
-            count += 1;
-            if byte & 0x80 == 0 {
+        //single byte
+        let d0 = data[data.len() - 1];
+        if !msb_bit(d0) {
+            return (Self(d0 as _), 1);
+        }
+        let mut value = (d0 & DATA_MASK) as NAME;
+        //rest of the bytes, read until msb bit is set
+        let mut i = 1;
+        for &byte in data[..(data.len() - 1)].iter().rev() {
+            value = value.wrapping_shl(7);
+            value |= (byte & DATA_MASK) as NAME;
+            i += 1;
+            if msb_bit(byte) {
                 break;
             }
         }
-        (VarInt(value), count)
+        (Self(value), i as usize)
+    }
+
+    fn read(data: &[u8]) -> (Self, usize) {
+        //single byte
+        let d0 = data[0];
+        if !msb_bit(d0) {
+            return (Self(d0 as _), 1);
+        }
+        let mut value = (d0 & DATA_MASK) as NAME;
+        //rest of the bytes, read until msb bit is set
+        let mut i = 1;
+        for &byte in &data[1..] {
+            value |= ((byte & DATA_MASK) as NAME).wrapping_shl(i * 7);
+            i += 1;
+            if msb_bit(byte) {
+                break;
+            }
+        }
+        (Self(value), i as usize)
     }
 
     fn write(self, data: &mut [u8]) -> usize {
-        todo!()
+        if self.0 <= 127 {
+            data[0] = self.0 as u8;
+            return 1;
+        }
+        let mut value = self.0;
+        let mut i = 0;
+        data[i] = (value as u8 & DATA_MASK) | MSB_BIT; //first byte with msb set
+        value = value.wrapping_shr(7);
+        loop {
+            i += 1;
+            let byte = value as u8 & DATA_MASK;
+            value = value.wrapping_shr(7);
+            if value == 0 {
+                //all data was written
+                data[i] = byte | MSB_BIT;
+                break i + 1;
+            } else {
+                data[i] = byte;
+            }
+        }
     }
     fn from_usize(val: usize) -> Self {
         Self(val as _)
@@ -209,7 +262,7 @@ impl OffsetInt for VarInt<NAME> {
 }
 
 pub struct BungeeStr {
-    inner: BungeeBytes<FixedInt<usize>>,
+    inner: BungeeBytes<VarInt<usize>>,
 }
 
 impl BungeeStr {

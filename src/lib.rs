@@ -4,6 +4,7 @@
 
 mod consts;
 mod hasher;
+mod store;
 mod utils;
 
 pub use consts::*;
