@@ -203,12 +203,8 @@ impl ChunkData {
         }
     }
     pub fn new(size: usize) -> Self {
-        let mut array = Vec::with_capacity(size);
-        for _ in 0..size {
-            array.push(0);
-        }
         Self {
-            array: array.into_boxed_slice(),
+            array: vec![0u8; size].into_boxed_slice(),
             length: 0,
         }
     }

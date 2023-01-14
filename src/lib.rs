@@ -2,11 +2,13 @@
 
 //#![deny(unsafe_code)]
 
+extern crate core;
+
 mod consts;
+pub mod file;
 mod hasher;
 mod store;
-mod utils;
+pub mod utils;
 
 pub use consts::*;
 pub use hasher::*;
-pub use utils::*;

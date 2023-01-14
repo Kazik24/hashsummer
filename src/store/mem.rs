@@ -1,18 +1,16 @@
 use crate::store::{DiffingIter, HashStore};
-use crate::{HashArray, HashEntry};
+use crate::{DataEntry, HashArray, HashEntry};
 use std::iter::Copied;
 use std::slice::Iter;
 
-type Entry = HashEntry<32, 32>;
-
 pub struct MemHashStore {
-    entries: Vec<Entry>,
+    entries: Vec<DataEntry>,
     sorted_by_id: bool, //true - by id, false - by data
 }
 
 impl HashStore for MemHashStore {
-    type OwnIter<'a> = Copied<Iter<'a, Entry>>;
-    type RefIter<'a> = Iter<'a, Entry>;
+    type OwnIter<'a> = Copied<Iter<'a, DataEntry>>;
+    type RefIter<'a> = Iter<'a, DataEntry>;
 
     fn sorted_ref_iter(&self) -> Self::RefIter<'_> {
         self.entries.iter()
@@ -26,8 +24,8 @@ impl HashStore for MemHashStore {
     }
 }
 
-impl FromIterator<Entry> for MemHashStore {
-    fn from_iter<T: IntoIterator<Item = Entry>>(iter: T) -> Self {
+impl FromIterator<DataEntry> for MemHashStore {
+    fn from_iter<T: IntoIterator<Item = DataEntry>>(iter: T) -> Self {
         let mut v = iter.into_iter().collect::<Vec<_>>();
         v.sort_unstable();
         Self {
@@ -37,8 +35,8 @@ impl FromIterator<Entry> for MemHashStore {
     }
 }
 
-impl<'a> FromIterator<&'a Entry> for MemHashStore {
-    fn from_iter<T: IntoIterator<Item = &'a Entry>>(iter: T) -> Self {
+impl<'a> FromIterator<&'a DataEntry> for MemHashStore {
+    fn from_iter<T: IntoIterator<Item = &'a DataEntry>>(iter: T) -> Self {
         let mut v = iter.into_iter().copied().collect::<Vec<_>>();
         v.sort_unstable();
         Self {
@@ -49,11 +47,11 @@ impl<'a> FromIterator<&'a Entry> for MemHashStore {
 }
 
 impl MemHashStore {
-    pub fn diff_with_new<'a>(&'a self, new: &'a Self) -> DiffingIter<Iter<'a, Entry>, Iter<'a, Entry>> {
+    pub fn diff_with_new<'a>(&'a self, new: &'a Self) -> DiffingIter<Iter<'a, DataEntry>, Iter<'a, DataEntry>> {
         DiffingIter::new(self.sorted_ref_iter(), new.sorted_ref_iter())
     }
 
-    pub fn find_by_id(&self, id: &HashArray<32>) -> Option<&Entry> {
+    pub fn find_by_id(&self, id: &HashArray<32>) -> Option<&DataEntry> {
         match self.entries.binary_search_by_key(id, |v| v.id) {
             Ok(index) => Some(&self.entries[index]),
             Err(_) => None,

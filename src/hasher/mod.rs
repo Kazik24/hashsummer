@@ -66,6 +66,17 @@ impl<const N: usize> HashArray<N> {
         Self { array }
     }
 
+    pub const fn put_bytes(mut self, mut pos: usize, mut bytes: &[u8]) -> Self {
+        let end = pos + bytes.len();
+        let mut i = 0;
+        while pos < end {
+            self.array[pos] = bytes[i];
+            pos += 1;
+            i += 1;
+        }
+        self
+    }
+
     const fn hex_digit(b: u8) -> u8 {
         match Self::match_hex_digit(b) {
             Ok(v) => v,
@@ -90,12 +101,47 @@ impl<const N: usize> HashArray<N> {
             Self::parse_hex(value, false)
         }
     }
-
+    #[inline]
     pub const fn get_ref(&self) -> &[u8; N] {
         &self.array
     }
+    #[inline]
     pub fn get_mut(&mut self) -> &mut [u8; N] {
         &mut self.array
+    }
+    #[inline]
+    pub fn get_u16(&self, index: usize) -> u16 {
+        u16::from_le_bytes(self.get_slice::<{ size_of::<u16>() }>(index))
+    }
+    #[inline]
+    pub fn get_u32(&self, index: usize) -> u32 {
+        u32::from_le_bytes(self.get_slice::<{ size_of::<u32>() }>(index))
+    }
+    #[inline]
+    pub fn get_u64(&self, index: usize) -> u64 {
+        u64::from_le_bytes(self.get_slice::<{ size_of::<u64>() }>(index))
+    }
+
+    #[inline]
+    pub fn get_slice<const B: usize>(&self, index: usize) -> [u8; B] {
+        self.array[index..(index + B)].try_into().unwrap()
+    }
+
+    #[inline]
+    pub fn set_u16(&mut self, index: usize, value: u16) {
+        self.set_slice::<{ size_of::<u16>() }>(index, value.to_le_bytes());
+    }
+    #[inline]
+    pub fn set_u32(&mut self, index: usize, value: u32) {
+        self.set_slice::<{ size_of::<u32>() }>(index, value.to_le_bytes());
+    }
+    #[inline]
+    pub fn set_u64(&mut self, index: usize, value: u64) {
+        self.set_slice::<{ size_of::<u64>() }>(index, value.to_le_bytes());
+    }
+    #[inline]
+    pub fn set_slice<const B: usize>(&mut self, index: usize, data: [u8; B]) {
+        self.array[index..(index + B)].copy_from_slice(&data);
     }
 
     pub fn top_bits(&self) -> u64 {
@@ -179,6 +225,8 @@ pub struct HashEntry<const ID: usize, const DATA: usize> {
     pub id: HashArray<ID>,     //for file name hash (full or relative path)
     pub data: HashArray<DATA>, //for file content hash
 }
+
+pub type DataEntry = HashEntry<32, 32>; //default hash entry size
 
 impl<const ID: usize, const DATA: usize> HashEntry<ID, DATA> {
     pub const fn zero() -> Self {

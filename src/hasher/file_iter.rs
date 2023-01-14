@@ -1,4 +1,4 @@
-use crate::{BungeeIndex, BungeeStr};
+use crate::utils::{BungeeIndex, BungeeStr};
 use compress::bwt::*;
 use flate2::Compression;
 use std::borrow::Cow;
@@ -115,11 +115,13 @@ fn compress_text(text: &[u8], use_burrows_wheeler: bool) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::file::chunk::Hashes;
     use crate::*;
     use flate2::Compression;
+    use itertools::Itertools;
     use parking_lot::Mutex;
     use sha2::Sha256;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::fs::File;
     use std::io::BufWriter;
     use std::mem::size_of_val;
@@ -191,20 +193,41 @@ mod tests {
         }
     }
 
+    fn convert_to_hash_chunk_file(in_path: &Path, out_path: &Path) -> std::io::Result<()> {
+        let data = read_vec_bytes(in_path)?;
+        let mut hash = Hashes::new_sha256(data, false);
+        hash.verify_update_sorted();
+        let mut file = File::options().write(true).truncate(true).create(true).open(out_path)?;
+        hash.write(&mut file)
+    }
+
     #[test]
     fn test_read_sum_file() {
         let path = Path::new("tdev1.raw.hsum");
         //let path = Path::new("tmf1.raw.hsum");
 
-        let vals = read_vec_bytes(path).unwrap();
+        let vals = {
+            let start = Instant::now();
+            let mut file = File::open(path).unwrap();
+            let h = Hashes::read(&mut file).unwrap();
+            println!("Reading hash block: {:.3?}", start.elapsed());
+            h
+        };
 
-        println!("first: {:?}", vals.first().unwrap());
-        println!("last:  {:?}", vals.last().unwrap());
+        assert_eq!(vals.sorted, vals.verify_sorted());
+
+        println!(
+            "Is sorted: {}, Name hash: {:?}, Data hash: {:?}",
+            vals.sorted, vals.name_hash, vals.data_hash
+        );
+
+        println!("first: {:?}", vals.data.first().unwrap());
+        println!("last:  {:?}", vals.data.last().unwrap());
 
         let start = Instant::now();
         let mut dupes = HashMap::new();
         let mut empty = Vec::new();
-        for e in &vals {
+        for e in &vals.data {
             if e.data == EMPTY_SHA256 {
                 empty.push(e);
             }
@@ -212,7 +235,7 @@ mod tests {
         }
 
         let mut top_bits = HashMap::new();
-        for a in &vals {
+        for a in &vals.data {
             let val = a.id.top_bits();
             let v = top_bits.entry(val >> 32).or_insert(0);
             *v += 1;
@@ -254,5 +277,23 @@ mod tests {
         let compressed = compress_text(bungee.raw_bytes(), false);
         println!("Bungee size after compression: {}", compressed.len());
         println!("total paths len: {}", path_len);
+
+        let mut avg_sum = 0.0;
+        for p in paths.iter().copied() {
+            let (sum, count) = bungee
+                .reverse_follow_iter(p)
+                .tuple_windows::<(_, _)>()
+                .map(|(p, n)| p.1.index.get() - n.1.index.get())
+                .fold((0, 0), |mut s, v| {
+                    s.0 += v;
+                    s.1 += 1;
+                    s
+                });
+            if count != 0 {
+                let avg = sum as f64 / count as f64;
+                avg_sum += avg;
+            }
+        }
+        println!("Average path distances: {:.3}", avg_sum / paths.len() as f64);
     }
 }

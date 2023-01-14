@@ -14,7 +14,7 @@ pub struct BungeeBytes<T: OffsetInt> {
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct BungeeIndex {
-    index: NonZeroUsize,
+    pub(crate) index: NonZeroUsize,
 }
 
 // fn xx(){
@@ -93,15 +93,10 @@ impl<T: OffsetInt> BungeeBytes<T> {
         (data, prev)
     }
 
-    pub fn reverse_follow_collect<'a>(&'a self, at: BungeeIndex, to: &mut Vec<&'a [u8]>) {
-        let mut current = at;
-        loop {
-            let (data, prev) = self.reverse_follow(current);
-            to.push(data);
-            match prev {
-                Some(at) => current = at,
-                None => break,
-            }
+    pub fn reverse_follow_iter(&self, at: BungeeIndex) -> BungeeFollowIter<T> {
+        BungeeFollowIter {
+            parent: self,
+            last: Some(at),
         }
     }
 
@@ -288,25 +283,62 @@ impl BungeeStr {
         (from_utf8(data).unwrap(), prev)
     }
 
+    pub fn reverse_follow_iter(&self, at: BungeeIndex) -> BungeeStrFollowIter {
+        BungeeStrFollowIter {
+            inner: self.inner.reverse_follow_iter(at),
+        }
+    }
+
     pub fn path_of(&self, sep: &str, at: BungeeIndex) -> String {
-        let mut parts = &mut Vec::new();
-        self.inner.reverse_follow_collect(at, &mut parts);
+        let parts = self.reverse_follow_iter(at).map(|(s, _)| s).collect::<Vec<_>>();
         let bytes: usize = parts.iter().map(|v| v.len()).sum();
         let bytes = bytes + sep.len() * parts.len().saturating_sub(1);
         let mut result = String::with_capacity(bytes);
         let mut it = parts.into_iter().rev();
         if let Some(v) = it.next() {
-            result.push_str(from_utf8(v).unwrap());
+            result.push_str(v);
         }
         for v in it {
             result.push_str(sep);
-            result.push_str(from_utf8(v).unwrap());
+            result.push_str(v);
         }
         result
     }
 
     pub fn raw_bytes(&self) -> &[u8] {
         self.inner.raw_bytes()
+    }
+}
+
+pub struct BungeeFollowIter<'a, T: OffsetInt> {
+    parent: &'a BungeeBytes<T>,
+    last: Option<BungeeIndex>,
+}
+
+pub struct BungeeStrFollowIter<'a> {
+    inner: BungeeFollowIter<'a, VarInt<usize>>,
+}
+
+impl<'a, T: OffsetInt> Iterator for BungeeFollowIter<'a, T> {
+    type Item = (&'a [u8], BungeeIndex);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.last {
+            Some(last) => {
+                let result = self.parent.reverse_follow(last);
+                self.last = result.1;
+                Some((result.0, last))
+            }
+            None => None,
+        }
+    }
+}
+
+impl<'a> Iterator for BungeeStrFollowIter<'a> {
+    type Item = (&'a str, BungeeIndex);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(a, b)| (from_utf8(a).unwrap(), b))
     }
 }
 

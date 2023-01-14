@@ -164,7 +164,7 @@ where
         let (a_lower, a_upper) = self.old.size_hint();
         let (b_lower, b_upper) = self.new.size_hint();
 
-        let lower = a_lower.min(b_lower);
+        let lower = a_lower.max(b_lower);
 
         let upper = match (a_upper, b_upper) {
             (Some(x), Some(y)) => Some(x.max(y)),
@@ -175,6 +175,14 @@ where
 
         (lower, upper)
     }
+}
+
+impl<O, N> ExactSizeIterator for DiffingIter<O, N>
+where
+    O: ExactSizeIterator,
+    N: ExactSizeIterator<Item = O::Item>,
+    O::Item: NamedValue,
+{
 }
 
 #[cfg(test)]
