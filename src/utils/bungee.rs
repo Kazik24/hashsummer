@@ -1,3 +1,4 @@
+use crate::utils::MeasureMemory;
 use std::io::Read;
 use std::iter::repeat;
 use std::marker::PhantomData;
@@ -7,6 +8,7 @@ use std::ops::{Add, Sub};
 use std::path::PathBuf;
 use std::str::from_utf8;
 
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub struct BungeeBytes<T: OffsetInt> {
     data: Vec<u8>,
     _phantom: PhantomData<T>,
@@ -256,6 +258,7 @@ impl OffsetInt for VarInt<NAME> {
     }
 }
 
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub struct BungeeStr {
     inner: BungeeBytes<VarInt<usize>>,
 }
@@ -307,6 +310,12 @@ impl BungeeStr {
 
     pub fn raw_bytes(&self) -> &[u8] {
         self.inner.raw_bytes()
+    }
+}
+
+impl MeasureMemory for BungeeStr {
+    fn memory_usage(&self) -> usize {
+        size_of::<Self>() + self.inner.data.capacity()
     }
 }
 

@@ -1,4 +1,5 @@
 use crate::file::BLOCK_HEADER_MAGIC;
+use crate::utils::{BungeeIndex, BungeeStr, MeasureMemory};
 use crate::{DataEntry, HashArray, HashEntry};
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -9,9 +10,24 @@ use std::mem::size_of;
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub struct Hashes {
     pub data: Vec<DataEntry>,
-    pub sorted: bool,
+    pub sort: SortOrder,
     pub name_hash: HashType,
     pub data_hash: HashType,
+}
+
+#[derive(Clone, Eq, PartialEq, Hash)]
+pub struct Names {
+    bungee: BungeeStr,
+    indexes: Vec<BungeeIndex>,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+#[repr(u8)]
+pub enum SortOrder {
+    Unordered = 0,
+    SortedByName = 1,
+    Unknown = 2,
+    SortedByData = 3,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -20,7 +36,7 @@ pub enum HashType {
 }
 
 macro_rules! impl_fingerprint {
-    ($($value:ident => $array:literal),*) => {
+    ($($value:ident => $array:literal $( or $($more:literal)|+ )? $(bytes: $bytes:expr)?),*) => {
         impl HashType {
             pub const FINGERPRINT_SIZE: usize = 8;
             pub fn get_fingerprint(&self) -> [u8; Self::FINGERPRINT_SIZE] {
@@ -30,8 +46,13 @@ macro_rules! impl_fingerprint {
             }
             pub fn from_fingerprint(fp: [u8; Self::FINGERPRINT_SIZE]) -> Option<Self> {
                 match &fp {
-                    $($array => Some(Self::$value),)*
+                    $($array $( $(| $more)+)? => Some(Self::$value),)*
                     _ => None,
+                }
+            }
+            pub fn bytes_count(&self) -> usize {
+                match self {
+                    $(Self::$value => { 32 $(; $bytes)? },)*
                 }
             }
         }
@@ -39,25 +60,29 @@ macro_rules! impl_fingerprint {
 }
 
 impl_fingerprint! {
-    Sha256 => b"Sha256__"
+    Sha256 => b"Sha2_256" or b"Sha256__" | b"Sha2-256"
 }
 
 struct HashesHeader {
     size: u64,
-    sorted: bool,
+    sort: SortOrder,
     name_hash: HashType,
     data_hash: HashType,
 }
 
 impl HashesHeader {
-    const SORTED_FLAG: u32 = 1;
+    const FLAG_SORTED: u32 = 1;
+    const FLAG_SORTED_BY_DATA: u32 = 1;
+
     pub fn to_array(&self) -> HashArray<64> {
         let mut array = HashArray::zero();
         array.get_mut()[..BLOCK_HEADER_MAGIC.len()].copy_from_slice(BLOCK_HEADER_MAGIC);
         let mut flags = 0;
-        flags |= if self.sorted { Self::SORTED_FLAG } else { 0 };
+        flags |= self.sort as u32 & 0x3;
         array.set_u32(4, flags);
         array.set_u64(8, self.size);
+        array.set_slice(16, self.name_hash.get_fingerprint());
+        array.set_slice(24, self.data_hash.get_fingerprint());
         array
     }
     pub fn read<R: Read>(read: &mut R) -> io::Result<Self> {
@@ -71,14 +96,21 @@ impl HashesHeader {
         }
         let flags = array.get_u32(4);
         let size = array.get_u64(8);
-        let sorted = (flags & Self::SORTED_FLAG) != 0;
+        let sort = match flags & 0x3 {
+            0 => SortOrder::Unordered,
+            1 => SortOrder::SortedByName,
+            3 => SortOrder::SortedByData,
+            _ => SortOrder::Unknown,
+        };
+        let sorted = (flags & Self::FLAG_SORTED) != 0;
+        let sorted_by_data = (flags & Self::FLAG_SORTED_BY_DATA) != 0;
         let name_hash = HashType::from_fingerprint(array.get_slice(16))
             .ok_or_else(|| Error::new(ErrorKind::Unsupported, "Unknown name hash type fingerprint"))?;
         let data_hash = HashType::from_fingerprint(array.get_slice(24))
             .ok_or_else(|| Error::new(ErrorKind::Unsupported, "Unknown data hash type fingerprint"))?;
 
         Ok(Self {
-            sorted,
+            sort,
             size,
             name_hash,
             data_hash,
@@ -90,7 +122,7 @@ impl Hashes {
     pub fn new_sha256(data: Vec<DataEntry>, sorted: bool) -> Self {
         Self {
             data,
-            sorted,
+            sort: SortOrder::SortedByName,
             name_hash: HashType::Sha256,
             data_hash: HashType::Sha256,
         }
@@ -113,7 +145,7 @@ impl Hashes {
         //Self::fix_endianness(data_bytes);
 
         Ok(Self {
-            sorted: header.sorted,
+            sort: header.sort,
             data,
             name_hash: header.name_hash,
             data_hash: header.data_hash,
@@ -130,7 +162,7 @@ impl Hashes {
 
         let header = HashesHeader {
             size: self.data.len() as _,
-            sorted: self.sorted,
+            sort: self.sort,
             name_hash: self.name_hash,
             data_hash: self.data_hash,
         };
@@ -149,11 +181,27 @@ impl Hashes {
     }
 
     pub fn verify_update_sorted(&mut self) {
-        self.sorted = self.verify_sorted();
+        self.sort = if self.verify_sorted() {
+            SortOrder::SortedByName
+        } else {
+            SortOrder::Unordered
+        };
     }
 
     pub fn sort(&mut self) {
         self.data.sort_unstable();
-        self.sorted = true;
+        self.sort = SortOrder::SortedByName;
+    }
+}
+
+impl MeasureMemory for Hashes {
+    fn memory_usage(&self) -> usize {
+        size_of::<Self>() + self.data.capacity() * size_of::<DataEntry>()
+    }
+}
+
+impl MeasureMemory for Names {
+    fn memory_usage(&self) -> usize {
+        size_of::<Self>() + (self.indexes.capacity() * size_of::<BungeeIndex>()) + self.bungee.memory_usage()
     }
 }

@@ -55,6 +55,16 @@ impl<E> DiffResult<E> {
         }
     }
 }
+impl<E: NamedValue> DiffResult<E> {
+    pub fn get_name(&self) -> &E::Name {
+        match self {
+            Self::Added(a) => a.get_name(),
+            Self::Removed(a) => a.get_name(),
+            Self::Changed(a, _) => a.get_name(), //names should be equal here
+            Self::Same(a) => a.get_name(),
+        }
+    }
+}
 
 pub trait NamedValue {
     type Name: Ord;
@@ -164,12 +174,14 @@ where
         let (a_lower, a_upper) = self.old.size_hint();
         let (b_lower, b_upper) = self.new.size_hint();
 
-        let lower = a_lower.max(b_lower);
+        let lower = a_lower.max(b_lower) + (self.curr_new.is_some() || self.curr_old.is_some()) as usize;
 
         let upper = match (a_upper, b_upper) {
-            (Some(x), Some(y)) => Some(x.max(y)),
-            (Some(x), None) => Some(x),
-            (None, Some(y)) => Some(y),
+            (Some(x), Some(y)) => x
+                .checked_add(y)
+                .and_then(|v| v.checked_add(self.curr_old.is_some() as usize + self.curr_new.is_some() as usize)),
+            (Some(_), None) => None,
+            (None, Some(_)) => None,
             (None, None) => None,
         };
 
@@ -177,18 +189,11 @@ where
     }
 }
 
-impl<O, N> ExactSizeIterator for DiffingIter<O, N>
-where
-    O: ExactSizeIterator,
-    N: ExactSizeIterator<Item = O::Item>,
-    O::Item: NamedValue,
-{
-}
-
 #[cfg(test)]
 mod tests {
     use crate::store::{DiffResult, DiffingIter};
     use crate::{HashArray, HashEntry};
+    use std::iter::empty;
 
     fn mock_entry(id: &str, data: &str) -> HashEntry<32, 32> {
         HashEntry {
@@ -198,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn test_diff_same() {
+    fn test_diff_basic() {
         let arr = &[
             mock_entry("01", "11"),
             mock_entry("02", "12"),
@@ -207,9 +212,18 @@ mod tests {
             mock_entry("05", "15"),
         ];
 
+        //all same
         let v = DiffingIter::new(arr.iter(), arr.iter()).collect::<Vec<_>>();
-
+        assert_eq!(v.len(), arr.len());
         assert!(v.iter().zip(arr).all(|(a, b)| a == &DiffResult::Same(b)));
+        //all removed
+        let v = DiffingIter::new(arr.iter(), empty()).collect::<Vec<_>>();
+        assert_eq!(v.len(), arr.len());
+        assert!(v.iter().zip(arr).all(|(a, b)| a == &DiffResult::Removed(b)));
+        //all added
+        let v = DiffingIter::new(empty(), arr.iter()).collect::<Vec<_>>();
+        assert_eq!(v.len(), arr.len());
+        assert!(v.iter().zip(arr).all(|(a, b)| a == &DiffResult::Added(b)));
     }
 
     #[test]

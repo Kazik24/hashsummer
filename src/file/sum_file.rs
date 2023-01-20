@@ -43,6 +43,7 @@ pub enum BlockType {
     None = 0,
     MainHeader = 1, //main header is always 64 bytes, should be only one in file,
     Hashes = 2,     //hashes chunk
+    Names = 3,      //names of files for corresponding hashes
 
     Reserved = 254,
     MoreBlocks = 255,

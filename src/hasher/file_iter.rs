@@ -115,16 +115,20 @@ fn compress_text(text: &[u8], use_burrows_wheeler: bool) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file::chunk::Hashes;
+    use crate::file::chunk::{Hashes, SortOrder};
+    use crate::store::{DiffResult, DiffingIter};
+    use crate::utils::MeasureMemory;
     use crate::*;
+    use digest::Digest;
     use flate2::Compression;
+    use generic_array::GenericArray;
     use itertools::Itertools;
     use parking_lot::Mutex;
     use sha2::Sha256;
     use std::collections::{HashMap, HashSet};
     use std::fs::File;
     use std::io::BufWriter;
-    use std::mem::size_of_val;
+    use std::mem::{replace, size_of_val};
     use std::sync::Arc;
     use std::thread::sleep;
     use std::time::{Duration, Instant};
@@ -179,18 +183,21 @@ mod tests {
         runner.wait_for_finish();
 
         let mut vals = cons.0.lock();
-        println!("Processed: {}", vals.len());
-        let bytes = size_of_val(vals.as_slice()) as f64 / (1024.0 * 1024.0);
+        let mut vals = Hashes::new_sha256(replace(&mut *vals, Vec::new()), false);
+        println!("Processed: {}", vals.data.len());
+        let bytes = size_of_val(vals.data.as_slice()) as f64 / (1024.0 * 1024.0);
         println!("Memory taken: {bytes:.3}Mb");
 
-        vals.sort_unstable_by(|a, b| a.cmp(b));
-        println!("first: {:?}", vals.first().unwrap());
-        println!("last:  {:?}", vals.last().unwrap());
-        write_vec_bytes("hashes.hsum", &vals);
-        println!("Empty hash: {:?}", EMPTY_SHA256);
-        for val in vals.iter() {
-            println!("{val:?}");
-        }
+        vals.sort();
+        println!("first: {:?}", vals.data.first().unwrap());
+        println!("last:  {:?}", vals.data.last().unwrap());
+
+        // let path = Path::new("hashes.hsum");
+        // vals.write(&mut File::options().write(true).truncate(true).create(true).open(path).unwrap()).unwrap();
+        // println!("Empty hash: {:?}", EMPTY_SHA256);
+        // for val in vals.iter() {
+        //     println!("{val:?}");
+        // }
     }
 
     fn convert_to_hash_chunk_file(in_path: &Path, out_path: &Path) -> std::io::Result<()> {
@@ -214,11 +221,11 @@ mod tests {
             h
         };
 
-        assert_eq!(vals.sorted, vals.verify_sorted());
+        assert_eq!(vals.sort == SortOrder::SortedByName, vals.verify_sorted());
 
         println!(
-            "Is sorted: {}, Name hash: {:?}, Data hash: {:?}",
-            vals.sorted, vals.name_hash, vals.data_hash
+            "Is sorted: {:?}, Name hash: {:?}, Data hash: {:?}",
+            vals.sort, vals.name_hash, vals.data_hash
         );
 
         println!("first: {:?}", vals.data.first().unwrap());
@@ -269,7 +276,7 @@ mod tests {
             .filter_map(|(i, _, ty)| ty.is_file().then_some(i).flatten())
             .collect::<Vec<_>>();
 
-        println!("Paths: {:?}", paths);
+        println!("Paths: ({}){:?}", paths.len(), paths);
         let names = paths.iter().map(|v| bungee.path_of("/", *v)).collect::<Vec<_>>();
         println!("Recovered paths: {:#?}", names);
         println!("Bungee size: {}", bungee.raw_bytes().len());
@@ -295,5 +302,56 @@ mod tests {
             }
         }
         println!("Average path distances: {:.3}", avg_sum / paths.len() as f64);
+    }
+
+    fn file_names_hashed(path: impl AsRef<Path>) -> (BungeeStr, Vec<(BungeeIndex, HashArray<32>)>) {
+        let mut bungee = BungeeStr::new();
+        let files = depth_first_files(path)
+            .save_to_bungee(&mut bungee, |n| Some(n.to_string_lossy()))
+            .filter_map(|(i, e, ty)| Some((ty.is_file().then_some(i).flatten()?, e)))
+            .map(|(i, entry)| {
+                let mut array = HashArray::zero();
+                let mut hasher = Sha256::new_with_prefix(entry.path().to_string_lossy().as_bytes());
+                hasher.finalize_into(GenericArray::from_mut_slice(array.get_mut()));
+                (i, array)
+            })
+            .collect::<Vec<_>>();
+        println!("Bungee size: {}", bungee.raw_bytes().len());
+        (bungee, files)
+    }
+
+    #[test]
+    pub fn test_diff() {
+        let f1 = Path::new("tmf1.raw.hsum");
+        let f2 = Path::new("new_tmf1.hsum");
+
+        let h1 = Hashes::read(&mut File::open(f1).unwrap()).unwrap();
+        let h2 = Hashes::read(&mut File::open(f2).unwrap()).unwrap();
+
+        let (bungee, mut files) = file_names_hashed(Path::new("."));
+        let files = files.into_iter().map(|(a, b)| (b, a)).collect::<HashMap<_, _>>();
+
+        let old = h1.data.iter();
+        let new = h2.data.iter();
+        println!("old size: {}, new size: {}, files len: {}", old.len(), new.len(), files.len());
+        let diff = DiffingIter::new(old, new);
+        let changed = diff.filter(|v| !matches!(v, DiffResult::Same(..))).collect::<Vec<_>>();
+        println!("Changes: {}", changed.len());
+
+        //println!("{changed:#?}");
+
+        for ch in changed {
+            let name_hash = ch.get_name();
+
+            let Some(index) = files.get(name_hash) else {
+                println!("{:?} file not found {:?}", ch.diff_type(), name_hash);
+                continue;
+            };
+            let recovered_path = bungee.path_of("/", *index);
+            println!("Path for {:?} file: {}", ch.diff_type(), recovered_path);
+        }
+
+        let mem = h1.memory_usage() + h2.memory_usage() + bungee.memory_usage() + files.len() * size_of::<(BungeeIndex, HashArray<32>)>();
+        println!("Approx mem: {:.03}Mb", mem as f64 / (1024.0 * 1024.0));
     }
 }
