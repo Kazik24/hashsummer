@@ -1,5 +1,6 @@
-pub mod chunk;
 mod codecs;
+pub mod hashes_chunk;
+mod names_chunk;
 mod sum_file;
 
 pub use sum_file::*;

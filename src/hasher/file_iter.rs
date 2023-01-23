@@ -115,7 +115,7 @@ fn compress_text(text: &[u8], use_burrows_wheeler: bool) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file::chunk::{Hashes, SortOrder};
+    use crate::file::hashes_chunk::{HashesChunk, HashesIterChunk, SortOrder};
     use crate::store::{DiffResult, DiffingIter};
     use crate::utils::MeasureMemory;
     use crate::*;
@@ -183,7 +183,7 @@ mod tests {
         runner.wait_for_finish();
 
         let mut vals = cons.0.lock();
-        let mut vals = Hashes::new_sha256(replace(&mut *vals, Vec::new()), false);
+        let mut vals = HashesChunk::new_sha256(replace(&mut *vals, Vec::new()), false);
         println!("Processed: {}", vals.data.len());
         let bytes = size_of_val(vals.data.as_slice()) as f64 / (1024.0 * 1024.0);
         println!("Memory taken: {bytes:.3}Mb");
@@ -202,7 +202,7 @@ mod tests {
 
     fn convert_to_hash_chunk_file(in_path: &Path, out_path: &Path) -> std::io::Result<()> {
         let data = read_vec_bytes(in_path)?;
-        let mut hash = Hashes::new_sha256(data, false);
+        let mut hash = HashesChunk::new_sha256(data, false);
         hash.verify_update_sorted();
         let mut file = File::options().write(true).truncate(true).create(true).open(out_path)?;
         hash.write(&mut file)
@@ -216,7 +216,7 @@ mod tests {
         let vals = {
             let start = Instant::now();
             let mut file = File::open(path).unwrap();
-            let h = Hashes::read(&mut file).unwrap();
+            let h = HashesChunk::read(&mut file).unwrap();
             println!("Reading hash block: {:.3?}", start.elapsed());
             h
         };
@@ -325,8 +325,9 @@ mod tests {
         let f1 = Path::new("tmf1.raw.hsum");
         let f2 = Path::new("new_tmf1.hsum");
 
-        let h1 = Hashes::read(&mut File::open(f1).unwrap()).unwrap();
-        let h2 = Hashes::read(&mut File::open(f2).unwrap()).unwrap();
+        let h1 = HashesChunk::read(&mut File::open(f1).unwrap()).unwrap();
+        let h2 = HashesChunk::read(&mut File::open(f2).unwrap()).unwrap();
+        //let h2 = HashesIterChunk::new(File::open(f2).unwrap()).unwrap();
 
         let (bungee, mut files) = file_names_hashed(Path::new("."));
         let files = files.into_iter().map(|(a, b)| (b, a)).collect::<HashMap<_, _>>();

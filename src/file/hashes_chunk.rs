@@ -1,24 +1,19 @@
 use crate::file::BLOCK_HEADER_MAGIC;
 use crate::utils::{BungeeIndex, BungeeStr, MeasureMemory};
 use crate::{DataEntry, HashArray, HashEntry};
+use rustfft::num_traits::ToPrimitive;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::io;
-use std::io::{Error, ErrorKind, Read, Write};
+use std::io::{Error, ErrorKind, Read, Seek, Write};
 use std::mem::size_of;
 
 #[derive(Clone, Eq, PartialEq, Hash)]
-pub struct Hashes {
+pub struct HashesChunk {
     pub data: Vec<DataEntry>,
     pub sort: SortOrder,
     pub name_hash: HashType,
     pub data_hash: HashType,
-}
-
-#[derive(Clone, Eq, PartialEq, Hash)]
-pub struct Names {
-    bungee: BungeeStr,
-    indexes: Vec<BungeeIndex>,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -118,7 +113,7 @@ impl HashesHeader {
     }
 }
 
-impl Hashes {
+impl HashesChunk {
     pub fn new_sha256(data: Vec<DataEntry>, sorted: bool) -> Self {
         Self {
             data,
@@ -194,14 +189,58 @@ impl Hashes {
     }
 }
 
-impl MeasureMemory for Hashes {
+impl MeasureMemory for HashesChunk {
     fn memory_usage(&self) -> usize {
         size_of::<Self>() + self.data.capacity() * size_of::<DataEntry>()
     }
 }
 
-impl MeasureMemory for Names {
-    fn memory_usage(&self) -> usize {
-        size_of::<Self>() + (self.indexes.capacity() * size_of::<BungeeIndex>()) + self.bungee.memory_usage()
+pub struct HashesIterChunk<R> {
+    header: HashesHeader,
+    reader: R,
+    count: usize,
+    start_data_pos: u64,
+}
+
+impl<R: Read + Seek> HashesIterChunk<R> {
+    fn with_header(header: HashesHeader, mut reader: R, save_start: Option<bool>) -> io::Result<Self> {
+        usize::try_from(header.size).map_err(|_| Error::new(ErrorKind::Unsupported, "File has too many entries"))?;
+        let start_data_pos = match save_start {
+            Some(true) => reader.stream_position()?,       //verbose save
+            Some(false) => 0,                              //don't save anything
+            None => reader.stream_position().unwrap_or(0), //implicit save, ignore error
+        };
+        Ok(Self {
+            start_data_pos,
+            header,
+            reader,
+            count: 0,
+        })
+    }
+
+    pub fn new(mut reader: R) -> io::Result<Self> {
+        Self::with_header(HashesHeader::read(&mut reader)?, reader, Some(true))
     }
 }
+
+impl<R: Read> Iterator for HashesIterChunk<R> {
+    type Item = io::Result<DataEntry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.count == self.header.size as _ {
+            return None;
+        }
+        self.count += 1;
+        let mut entry = DataEntry::zero();
+        Some(self.reader.read_exact(entry.as_mut_buf()).map(|_| entry).map_err(|e| {
+            self.count = self.header.size as _; //mark as finished after first error
+            e
+        }))
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let exact = self.header.size as _;
+        (exact, Some(exact))
+    }
+}
+
+impl<R: Read> ExactSizeIterator for HashesIterChunk<R> {}

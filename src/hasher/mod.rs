@@ -6,6 +6,7 @@ mod sum_file;
 use digest::{Digest, FixedOutputReset};
 use std::mem::{align_of, transmute};
 use std::ops::Index;
+use std::slice::{from_raw_parts, from_raw_parts_mut};
 use std::{
     cmp::Ordering,
     fmt::{Debug, LowerHex, UpperHex},
@@ -234,6 +235,19 @@ impl<const ID: usize, const DATA: usize> HashEntry<ID, DATA> {
             id: HashArray::zero(),
             data: HashArray::zero(),
         }
+    }
+}
+
+impl DataEntry {
+    pub fn as_buf(&self) -> &[u8] {
+        let size = self.id.array.len() + self.data.array.len();
+        //id is first in struct
+        unsafe { from_raw_parts(self.id.get_ref().as_ptr(), size) }
+    }
+    pub fn as_mut_buf(&mut self) -> &mut [u8] {
+        let size = self.id.array.len() + self.data.array.len();
+        //id is first in struct
+        unsafe { from_raw_parts_mut(self.id.get_mut().as_mut_ptr(), size) }
     }
 }
 
