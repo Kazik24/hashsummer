@@ -1,6 +1,7 @@
 use itertools::Itertools;
 use std::cmp::Ordering;
 use std::fmt::Debug;
+use std::iter::FusedIterator;
 use std::mem::swap;
 use std::slice::IterMut;
 
@@ -114,6 +115,140 @@ where
     }
 }
 
+struct MergeSorted<A, B>
+where
+    A: FusedIterator,
+    B: FusedIterator<Item = A::Item>,
+{
+    ia: A,
+    ib: B,
+    last: Option<A::Item>,
+    from_a: bool,
+}
+
+impl<A, B> MergeSorted<A, B>
+where
+    A: FusedIterator,
+    B: FusedIterator<Item = A::Item>,
+{
+    fn next_item(&mut self, compare: &mut impl FnMut(&A::Item, &A::Item) -> Ordering) -> Option<A::Item> {
+        match self.last.as_ref() {
+            None => match (self.ia.next(), self.ib.next()) {
+                (Some(a), Some(b)) => {
+                    if compare(&a, &b) == Ordering::Greater {
+                        self.last = Some(a);
+                        self.from_a = true;
+                        Some(b)
+                    } else {
+                        self.last = Some(b);
+                        self.from_a = false;
+                        Some(a)
+                    }
+                }
+                (Some(v), None) | (None, Some(v)) => Some(v),
+                (None, None) => None,
+            },
+            Some(last) if self.from_a => match self.ib.next() {
+                None => self.last.take(),
+                Some(b) => {
+                    if compare(last, &b) == Ordering::Greater {
+                        Some(b)
+                    } else {
+                        self.from_a = false;
+                        self.last.replace(b)
+                    }
+                }
+            },
+            Some(last) => match self.ia.next() {
+                //last from b
+                None => self.last.take(),
+                Some(a) => {
+                    if compare(last, &a) == Ordering::Greater {
+                        Some(a)
+                    } else {
+                        self.from_a = true;
+                        self.last.replace(a)
+                    }
+                }
+            },
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (a_lower, a_upper) = self.ia.size_hint();
+        let (b_lower, b_upper) = self.ib.size_hint();
+        let add = self.last.is_some() as usize;
+
+        let lower = a_lower.saturating_add(b_lower).saturating_add(add);
+        let upper = match (a_upper, b_upper) {
+            (Some(a), Some(b)) => a.checked_add(b).and_then(|v| v.checked_add(add)),
+            _ => None,
+        };
+        (lower, upper)
+    }
+}
+
+pub struct MergeSortedWith<A, B, F>
+where
+    A: FusedIterator,
+    B: FusedIterator<Item = A::Item>,
+    F: FnMut(&A::Item, &A::Item) -> Ordering,
+{
+    sort: MergeSorted<A, B>,
+    compare: F,
+}
+
+impl<A, B, F> FusedIterator for MergeSortedWith<A, B, F>
+where
+    A: FusedIterator,
+    B: FusedIterator<Item = A::Item>,
+    F: FnMut(&A::Item, &A::Item) -> Ordering,
+{
+}
+
+impl<A, B, F> MergeSortedWith<A, B, F>
+where
+    A: FusedIterator,
+    B: FusedIterator<Item = A::Item>,
+    F: FnMut(&A::Item, &A::Item) -> Ordering,
+{
+    pub fn new(ia: A, ib: B, compare: F) -> Self {
+        Self {
+            sort: MergeSorted {
+                ia,
+                ib,
+                last: None,
+                from_a: false,
+            },
+            compare,
+        }
+    }
+}
+
+impl<A, B, F> Iterator for MergeSortedWith<A, B, F>
+where
+    A: FusedIterator,
+    B: FusedIterator<Item = A::Item>,
+    F: FnMut(&A::Item, &A::Item) -> Ordering,
+{
+    type Item = A::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.sort.next_item(&mut self.compare)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.sort.size_hint()
+    }
+}
+impl<A, B, F> ExactSizeIterator for MergeSortedWith<A, B, F>
+where
+    A: FusedIterator,
+    B: FusedIterator<Item = A::Item>,
+    F: FnMut(&A::Item, &A::Item) -> Ordering,
+{
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,10 +273,12 @@ mod tests {
 
             println!("left: {:?}\nright: {:?}", left, right);
 
-            merge_sort_arrays(left, right, u16::cmp);
+            //merge_sort_arrays(left, right, u16::cmp);
 
-            println!("array: {:?}", array);
-            assert!(array.split_at(split).0.iter().enumerate().all(|(i, v)| *v == i as _));
+            let sorted = MergeSortedWith::new(left.iter().copied(), right.iter().copied(), u16::cmp).collect::<Vec<_>>();
+
+            println!("array: {:?}", sorted);
+            assert!(sorted.split_at(split).0.iter().enumerate().all(|(i, v)| *v == i as _));
             //assert!(array.split_at_mut(split).0.windows(2).all(|w| w[0].cmp(&w[1]) != Ordering::Greater));
         }
     }

@@ -3,26 +3,59 @@ use compress::bwt::*;
 use flate2::Compression;
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
+use std::fmt::{Display, Formatter};
 use std::fs::{read_dir, DirEntry, FileType, ReadDir};
 use std::io::Write;
+use std::iter::once;
 use std::path::{Path, PathBuf};
 
-pub struct DepthFileIter {
+pub struct DepthFileScanner {
     root: PathBuf,
     current: Vec<OsString>,
     stack: Vec<ReadDir>,
 }
 
-impl DepthFileIter {
+impl DepthFileScanner {
+    //todo multi root
     pub fn from_dir<P: AsRef<Path>>(path: P) -> Self {
-        let path = path.as_ref();
-        let mut buf = path.to_path_buf();
         Self {
-            root: path.to_path_buf(),
+            root: path.as_ref().to_path_buf(),
             current: Vec::new(),
             stack: read_dir(path).ok().into_iter().collect(),
         }
     }
+
+    pub fn reset_from_dir<P: AsRef<Path>>(&mut self, path: P) {
+        self.root = path.as_ref().to_path_buf();
+        self.current.clear();
+        self.stack.clear();
+        self.stack.extend(read_dir(path).ok());
+    }
+
+    pub fn into_iter(self) -> impl Iterator<Item = (DirEntry, FileType)> {
+        struct Iter(DepthFileScanner);
+        impl Iterator for Iter {
+            type Item = (DirEntry, FileType);
+
+            fn next(&mut self) -> Option<Self::Item> {
+                self.0.next_file().map(|f| (f.entry, f.file_type))
+            }
+        }
+        Iter(self)
+    }
+
+    pub fn iter(&mut self) -> impl Iterator<Item = (DirEntry, FileType)> + '_ {
+        struct Iter<'a>(&'a mut DepthFileScanner);
+        impl Iterator for Iter<'_> {
+            type Item = (DirEntry, FileType);
+
+            fn next(&mut self) -> Option<Self::Item> {
+                self.0.next_file().map(|f| (f.entry, f.file_type))
+            }
+        }
+        Iter(self)
+    }
+
     pub fn save_to_bungee<F>(self, bungee: &mut BungeeStr, conv: F) -> SaveToBungee<F>
     where
         F: FnMut(&OsStr) -> Option<Cow<'_, str>>,
@@ -36,33 +69,102 @@ impl DepthFileIter {
     }
 }
 
-pub fn depth_first_files<P: AsRef<Path>>(path: P) -> DepthFileIter {
-    DepthFileIter::from_dir(path)
+#[derive(Debug)]
+pub struct FileEntry<'a> {
+    /// root directory of file scanning (or one of roots)
+    pub root: &'a Path,
+    /// list of names in path before the name of this entry, excluding root
+    pub before_name: &'a [OsString],
+    /// if this entry is directory, then this field is a name of that directory
+    pub dir_name: Option<&'a OsStr>,
+    /// Os file type
+    pub file_type: FileType,
+    /// Os directory entry
+    pub entry: DirEntry,
 }
 
-impl Iterator for DepthFileIter {
-    type Item = (DirEntry, FileType);
+impl Display for FileEntry<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let path = self.path_without_root("/");
+        if f.alternate() {
+            write!(f, "{}", if self.is_dir() { "D:" } else { "F:" })?;
+        }
+        write!(f, "{}", path.to_string_lossy())
+    }
+}
 
-    fn next(&mut self) -> Option<Self::Item> {
+impl FileEntry<'_> {
+    pub fn get_name(&self) -> Cow<'_, OsStr> {
+        match self.dir_name {
+            Some(v) => Cow::Borrowed(v),
+            None => Cow::Owned(self.entry.file_name()),
+        }
+    }
+
+    pub fn path_without_root(&self, separator: impl AsRef<OsStr>) -> OsString {
+        let separator = separator.as_ref();
+        let mut s = OsString::new();
+        let name = self.get_name();
+        let mut path = self.before_name.iter().map(|v| v.as_os_str()).chain(once(name.as_ref()));
+        if let Some(p) = path.next() {
+            s.push(p);
+        }
+        for part in path {
+            s.push(separator);
+            s.push(part);
+        }
+        s
+    }
+    pub fn is_dir(&self) -> bool {
+        self.dir_name.is_some()
+    }
+}
+
+pub trait FileScanner {
+    fn next_file(&mut self) -> Option<FileEntry>;
+}
+
+impl FileScanner for DepthFileScanner {
+    fn next_file(&mut self) -> Option<FileEntry> {
         loop {
             let iter = self.stack.last_mut()?;
-            while let Some(elem) = iter.next() {
-                let Ok(elem) = elem else { continue; };
-                let Ok(fty) = elem.file_type() else { continue; };
-                if fty.is_dir() {
-                    if let Ok(iter) = read_dir(elem.path()) {
+            while let Some(entry) = iter.next() {
+                let Ok(entry) = entry else { continue; };
+                let Ok(file_type) = entry.file_type() else { continue; };
+                let mut dir_name = None;
+                let before_name = if file_type.is_dir() {
+                    if let Ok(iter) = read_dir(entry.path()) {
+                        self.current.push(entry.file_name());
                         self.stack.push(iter);
+                        dir_name = self.current.last().map(|v| v.as_os_str());
+                        &self.current[..(self.current.len() - 1)]
+                    } else {
+                        self.current.as_slice()
                     }
-                }
-                return Some((elem, fty));
+                } else {
+                    self.current.as_slice()
+                };
+
+                return Some(FileEntry {
+                    root: &self.root,
+                    before_name,
+                    dir_name,
+                    file_type,
+                    entry,
+                });
             }
             self.stack.pop();
+            self.current.pop();
         }
     }
 }
 
+pub fn depth_first_files<P: AsRef<Path>>(path: P) -> DepthFileScanner {
+    DepthFileScanner::from_dir(path)
+}
+
 pub struct SaveToBungee<'a, F> {
-    it: DepthFileIter,
+    it: DepthFileScanner,
     dirs: Vec<Option<BungeeIndex>>,
     bungee: &'a mut BungeeStr,
     name_convert: F,
@@ -143,7 +245,9 @@ mod tests {
     fn test_list_files() {
         let path = Path::new(".");
 
-        let paths = depth_first_files(path)
+        let mut scanner = DepthFileScanner::from_dir(path);
+        let paths = scanner
+            .iter()
             .filter(|(_, ty)| ty.is_file())
             .map(|(d, _)| d.path().to_string_lossy().into_owned());
         let mut names = FlatedFileNames::new(Compression::best());
@@ -163,11 +267,23 @@ mod tests {
     }
 
     #[test]
+    fn test_file_scanner() {
+        let path = Path::new(".");
+        let mut scanner = DepthFileScanner::from_dir(path);
+        while let Some(entry) = scanner.next_file() {
+            println!("{entry}");
+        }
+    }
+
+    #[test]
     fn test_runner() {
         let path = Path::new("test_files");
 
         println!("Scanning path: {:?}", path);
-        let paths = depth_first_files(path).filter(|(_, ty)| ty.is_file()).map(|(d, _)| d.path());
+        let paths = DepthFileScanner::from_dir(path)
+            .into_iter()
+            .filter(|(_, ty)| ty.is_file())
+            .map(|(d, _)| d.path());
 
         #[derive(Default)]
         struct Cons(Mutex<Vec<HashEntry<32, 32>>>);
@@ -270,7 +386,7 @@ mod tests {
         println!("Scanning path: {:?}", path);
         let mut bungee = BungeeStr::new();
         let mut path_len = 0;
-        let paths = depth_first_files(path)
+        let paths = DepthFileScanner::from_dir(path)
             .save_to_bungee(&mut bungee, |n| Some(n.to_string_lossy()))
             .inspect(|v| path_len += v.1.path().as_os_str().len())
             .filter_map(|(i, _, ty)| ty.is_file().then_some(i).flatten())
@@ -324,12 +440,13 @@ mod tests {
     pub fn test_diff() {
         let f1 = Path::new("tmf1.raw.hsum");
         let f2 = Path::new("new_tmf1.hsum");
+        let org_path = Path::new(".");
 
         let h1 = HashesChunk::read(&mut File::open(f1).unwrap()).unwrap();
         let h2 = HashesChunk::read(&mut File::open(f2).unwrap()).unwrap();
         //let h2 = HashesIterChunk::new(File::open(f2).unwrap()).unwrap();
 
-        let (bungee, mut files) = file_names_hashed(Path::new("."));
+        let (bungee, mut files) = file_names_hashed(org_path);
         let files = files.into_iter().map(|(a, b)| (b, a)).collect::<HashMap<_, _>>();
 
         let old = h1.data.iter();

@@ -160,11 +160,11 @@ where
                 }
             }
             Ordering::Greater => {
-                //old is greater than new, advance new and return values as Added()
+                //old is greater than new, advance new and return value as Added()
                 replace(&mut self.curr_new, self.new.next()).map(Added)
             }
             Ordering::Less => {
-                //old is lower than new, advance old and return values as Removed()
+                //old is lower than new, advance old and return value as Removed()
                 replace(&mut self.curr_old, self.old.next()).map(Removed)
             }
         }

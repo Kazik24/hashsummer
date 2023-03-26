@@ -28,6 +28,7 @@ pub enum SortOrder {
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum HashType {
     Sha256,
+    Blake3,
 }
 
 macro_rules! impl_fingerprint {
@@ -55,7 +56,8 @@ macro_rules! impl_fingerprint {
 }
 
 impl_fingerprint! {
-    Sha256 => b"Sha2_256" or b"Sha256__" | b"Sha2-256"
+    Sha256 => b"Sha2_256" or b"Sha256__" | b"Sha2-256",
+    Blake3 => b"Blake3__" or b"BLAKE3__"
 }
 
 struct HashesHeader {
