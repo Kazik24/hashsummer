@@ -12,3 +12,6 @@ what files were added/removed/changed.
  - Detecting disk data integrity errors where file system doesn't support checksums.
  - Generating list of what changed since last backup, and using other programs to copy/archive only listed files.
  - Other stuff...
+
+#### Other tools todo
+https://changelog.complete.org/archives/10516-using-git-annex-for-data-archiving

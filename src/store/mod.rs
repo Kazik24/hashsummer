@@ -1,6 +1,8 @@
+mod compress;
 mod mem;
 mod str_convert;
 
+pub use self::compress::*;
 pub use mem::*;
 pub use str_convert::*;
 

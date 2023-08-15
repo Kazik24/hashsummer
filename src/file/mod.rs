@@ -15,7 +15,7 @@ pub struct BlockBuf<T> {
 }
 
 impl<T> BlockBuf<T> {
-    pub const DEFAUL_BLOCK: usize = 1024 * 8;
+    pub const DEFAULT_BLOCK: usize = 1024 * 8;
     pub fn with_block_size(data: T, size: usize) -> Self {
         Self {
             file: data,
@@ -25,7 +25,7 @@ impl<T> BlockBuf<T> {
         }
     }
     pub fn new(data: T) -> Self {
-        Self::with_block_size(data, Self::DEFAUL_BLOCK)
+        Self::with_block_size(data, Self::DEFAULT_BLOCK)
     }
 }
 

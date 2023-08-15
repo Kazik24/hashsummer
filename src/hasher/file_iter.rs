@@ -218,7 +218,7 @@ fn compress_text(text: &[u8], use_burrows_wheeler: bool) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::file::hashes_chunk::{HashesChunk, HashesIterChunk, SortOrder};
-    use crate::store::{DiffResult, DiffingIter};
+    use crate::store::{compress_sorted_entries, DiffResult, DiffingIter};
     use crate::utils::MeasureMemory;
     use crate::*;
     use digest::Digest;
@@ -377,6 +377,10 @@ mod tests {
         // }
 
         println!("Calc time {:.3?}", start.elapsed());
+        let mut compressed = Vec::new();
+        compress_sorted_entries(vals.data.iter().copied(), vals.data.len() as _, |v| &v.id, &mut compressed).unwrap();
+
+        println!("compressed size: {}", compressed.len())
     }
 
     #[test]

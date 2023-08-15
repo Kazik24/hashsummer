@@ -163,7 +163,123 @@ impl<const N: usize> HashArray<N> {
     pub fn as_bytes_mut(&mut self) -> &mut [u8] {
         self.array.as_mut_slice()
     }
+
+    pub fn aligned_data_chunks<'a>(&'a self, other: &'a Self) -> impl DoubleEndedIterator<Item = (DataChunk, DataChunk)> + 'a {
+        let (_, a, _) = unsafe { self.array.align_to::<DataChunk>() };
+        let (_, b, _) = unsafe { other.array.align_to::<DataChunk>() };
+        assert_eq!(a.len(), b.len());
+        let len = self.array.len() / size_of::<DataChunk>();
+        assert_eq!(a.len(), len);
+        a.into_iter().copied().zip(b.into_iter().copied())
+    }
+
+    fn aligned_chunks_mut(&mut self) -> &mut [DataChunk] {
+        let len = self.array.len() / size_of::<DataChunk>();
+        let (_, a, _) = unsafe { self.array.align_to_mut::<DataChunk>() };
+        assert_eq!(a.len(), len);
+        a
+    }
+    fn aligned_chunks(&self) -> &[DataChunk] {
+        let len = self.array.len() / size_of::<DataChunk>();
+        let (_, a, _) = unsafe { self.array.align_to::<DataChunk>() };
+        assert_eq!(a.len(), len);
+        a
+    }
+
+    pub fn wrapping_add(&self, other: Self) -> Self {
+        let mut result = Self::zero();
+        let mut carry = false;
+        for ((a, b), r) in self.aligned_data_chunks(&other).zip(result.aligned_chunks_mut()) {
+            let (add, c1) = DataChunk::from_le(a).overflowing_add(DataChunk::from_le(b));
+            let (res, c2) = add.overflowing_add(carry as _);
+            carry = c1 || c2;
+            *r = res.to_le();
+        }
+        result
+    }
+
+    pub fn wrapping_sub(&self, other: Self) -> Self {
+        let mut result = Self::zero();
+        let mut carry = false;
+        for ((a, b), r) in self.aligned_data_chunks(&other).zip(result.aligned_chunks_mut()) {
+            let (add, c1) = DataChunk::from_le(a).overflowing_sub(DataChunk::from_le(b));
+            let (res, c2) = add.overflowing_sub(carry as _);
+            carry = c1 || c2;
+            *r = res.to_le();
+        }
+        result
+    }
+
+    pub fn checked_div_rem(&self, b: u64) -> Option<(Self, u64)> {
+        if b == 0 {
+            return None;
+        }
+        let mut a = *self;
+
+        let mut rem = 0;
+
+        if b <= HALF {
+            for d in a.aligned_chunks_mut().into_iter().rev() {
+                let (q, r) = Self::div_half(rem, *d, b);
+                *d = q;
+                rem = r;
+            }
+        } else {
+            for d in a.aligned_chunks_mut().into_iter().rev() {
+                let (q, r) = Self::div_wide(rem, *d, b);
+                *d = q;
+                rem = r;
+            }
+        }
+
+        Some((a, rem))
+    }
+
+    pub fn not(&self) -> Self {
+        let mut val = *self;
+        val.aligned_chunks_mut().iter_mut().for_each(|v| *v = !*v);
+        val
+    }
+
+    pub fn to_sign_reduced(&self) -> Self {
+        let mut first_bit = false;
+        let mut result = *self;
+        if result.aligned_chunks().last().unwrap() & LAST_BIT != 0 {
+            first_bit = true;
+            result = result.not()
+        }
+
+        for r in result.aligned_chunks_mut().iter_mut() {
+            let v = DataChunk::from_le(*r);
+            *r = v.wrapping_shl(1) | if first_bit { 1 } else { 0 };
+            first_bit = v & LAST_BIT != 0
+        }
+        result
+    }
+
+    #[inline]
+    fn div_half(rem: DataChunk, digit: DataChunk, divisor: DataChunk) -> (DataChunk, DataChunk) {
+        debug_assert!(rem < divisor && divisor <= HALF);
+        let v = (rem << HALF_BITS) | (digit >> HALF_BITS);
+        let (hi, rem) = (v / divisor, v % divisor);
+        let v = (rem << HALF_BITS) | (digit & HALF);
+        let (lo, rem) = (v / divisor, v % divisor);
+        ((hi << HALF_BITS) | lo, rem)
+    }
+
+    #[inline]
+    fn div_wide(hi: DataChunk, lo: DataChunk, divisor: DataChunk) -> (DataChunk, DataChunk) {
+        debug_assert!(hi < divisor);
+
+        let lhs = u128::from(lo) | (u128::from(hi) << DataChunk::BITS);
+        let rhs = u128::from(divisor);
+        ((lhs / rhs) as DataChunk, (lhs % rhs) as DataChunk)
+    }
 }
+
+pub(crate) const HALF_BITS: u8 = (DataChunk::BITS as u8) / 2;
+pub(crate) const HALF: DataChunk = (1 << HALF_BITS) - 1;
+const LAST_BIT: DataChunk = (1 << (DataChunk::BITS - 1));
 
 impl<const N: usize> LowerHex for HashArray<N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -199,20 +315,10 @@ impl<const N: usize> PartialOrd for HashArray<N> {
 impl<const N: usize> Ord for HashArray<N> {
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
-        let (_, a, _) = unsafe { self.array.align_to::<DataChunk>() };
-        let (_, b, _) = unsafe { other.array.align_to::<DataChunk>() };
-        assert_eq!(a.len(), b.len());
-        let len = self.array.len() / size_of::<DataChunk>();
-        assert_eq!(a.len(), len);
-
-        for i in (0..len).rev() {
-            unsafe {
-                let a = DataChunk::from_le(*a.get_unchecked(i));
-                let b = DataChunk::from_le(*b.get_unchecked(i));
-                let res = a.cmp(&b);
-                if res.is_ne() {
-                    return res;
-                }
+        for (a, b) in self.aligned_data_chunks(other).rev() {
+            let res = a.cmp(&b);
+            if res.is_ne() {
+                return res;
             }
         }
         Ordering::Equal
