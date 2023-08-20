@@ -34,10 +34,12 @@ pub fn compress_sorted_entries(
     println!("avg span: {average_span:?}");
 
     println!("First diffs:");
-    let prev = start;
-    for (i, e) in entries.take(10).enumerate() {
+
+    let mut prev = start;
+    for (i, e) in entries.take(100).enumerate() {
         let diff = e.id.wrapping_sub(prev.id);
-        let normalized = diff.wrapping_sub(average_span);
+        prev = e;
+        let normalized = diff.wrapping_sub(average_span).to_sign_reduced();
         println!("[{i}]: {diff:?}  n: {normalized:?}");
     }
 

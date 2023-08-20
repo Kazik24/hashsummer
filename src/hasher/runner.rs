@@ -58,7 +58,7 @@ fn format_panic_msg(payload: &Box<dyn std::any::Any + Send>) -> String {
 }
 
 impl HashRunner {
-    pub fn run<I, H: Digest, C: Consumer + Send + Sync + 'static>(files: I, consume: Arc<C>, permits: usize) -> Self
+    pub fn run<I, C: Consumer + Send + Sync + 'static>(files: I, consume: Arc<C>, permits: usize) -> Self
     where
         I: Iterator<Item = PathBuf> + Send + 'static,
     {
@@ -95,7 +95,7 @@ impl HashRunner {
         };
 
         let handle = spawn(move || {
-            Self::scheduler_run::<_, _, H>(cfg);
+            Self::scheduler_run(cfg);
         });
 
         Self {
@@ -123,11 +123,10 @@ impl HashRunner {
         self.scheduler.join();
     }
 
-    fn scheduler_run<I, C, H>(mut cfg: Config<I, C>)
+    fn scheduler_run<I, C>(mut cfg: Config<I, C>)
     where
         I: Iterator<Item = PathBuf>,
         C: Consumer + Send + Sync + 'static,
-        H: Digest,
     {
         while cfg.c.flag.load(Ordering::Relaxed) {
             let Some(file) = cfg.iter.next() else { break; };
@@ -148,7 +147,7 @@ impl HashRunner {
             let consumer = cfg.consumer.clone();
             let recycle = cfg.c.data_chunks_recycle.clone();
             cfg.c.worker_pool.spawn_fifo(move || {
-                Self::process_file::<_, H>(file2, rx, recycle, &*consumer, permit);
+                Self::process_file(file2, rx, recycle, &*consumer, permit);
             });
         }
         //wait for all permits to finish
@@ -170,22 +169,18 @@ impl HashRunner {
         }
     }
 
-    fn process_file<C, H: Digest>(path: PathBuf, din: Receiver<ChunkData>, recycle: Sender<ChunkData>, consumer: &C, signal: Arc<Permits>)
+    fn process_file<C>(path: PathBuf, din: Receiver<ChunkData>, recycle: Sender<ChunkData>, consumer: &C, signal: Arc<Permits>)
     where
         C: Consumer,
     {
-        //todo review file name hashing
-        let mut hasher = H::new_with_prefix(path.to_string_lossy().as_bytes());
-        let mut entry = HashEntry::<32, 32>::zero();
-        hasher.finalize_into(GenericArray::from_mut_slice(entry.id.get_mut()));
-        hasher = H::new();
+        let name = consumer.consume_name(&path);
+        let mut hasher = consumer.start_file();
 
         while let Ok(chunk) = din.recv() {
-            hasher.update(&*chunk);
+            consumer.update_file(&mut hasher, &chunk);
             recycle.send(chunk).unwrap();
         }
-        hasher.finalize_into(GenericArray::from_mut_slice(entry.data.get_mut()));
-        consumer.consume(entry);
+        consumer.finish_consume(name, hasher);
         signal.add_permit();
     }
 }
@@ -231,6 +226,9 @@ impl ChunkData {
     }
     pub fn len(&self) -> usize {
         self.length
+    }
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
     }
 }
 

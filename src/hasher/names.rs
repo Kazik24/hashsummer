@@ -67,7 +67,7 @@ impl NamesStorage for FileNames {
         let len = name.len().try_into().map_err(|_| PushError::LengthOverflow)?;
         let pos = self.string.len().try_into().map_err(|_| PushError::SizeOverflow)?;
         let result = NameRefId { len, pos };
-        self.string.try_reserve(name.len()).map_err(|v| PushError::Mem(v))?;
+        self.string.try_reserve(name.len()).map_err(PushError::Mem)?;
         self.string.push_str(name);
         Ok(result)
     }
@@ -111,8 +111,8 @@ impl NamesStorage for FlatedFileNames {
         let len = name.len().try_into().map_err(|_| PushError::LengthOverflow)?;
         let pos = self.pos.try_into().map_err(|_| PushError::SizeOverflow)?;
         let result = NameRefId { len, pos };
-        self.pos = self.pos.checked_add(name.len()).ok_or_else(|| PushError::SizeOverflow)?;
-        self.data.write(name.as_bytes()).unwrap();
+        self.pos = self.pos.checked_add(name.len()).ok_or(PushError::SizeOverflow)?;
+        self.data.write_all(name.as_bytes()).unwrap();
         Ok(result)
     }
 

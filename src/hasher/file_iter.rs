@@ -128,7 +128,7 @@ impl FileScanner for DepthFileScanner {
     fn next_file(&mut self) -> Option<FileEntry> {
         loop {
             let iter = self.stack.last_mut()?;
-            while let Some(entry) = iter.next() {
+            for entry in iter {
                 let Ok(entry) = entry else { continue; };
                 let Ok(file_type) = entry.file_type() else { continue; };
                 let mut dir_name = None;
@@ -180,7 +180,7 @@ where
         loop {
             let iter = self.it.stack.last_mut()?;
             let prev = self.dirs.last().copied().flatten();
-            while let Some(elem) = iter.next() {
+            for elem in iter {
                 let Ok(elem) = elem else { continue; };
                 let Ok(fty) = elem.file_type() else { continue; };
                 let name = elem.file_name();
@@ -285,22 +285,30 @@ mod tests {
             .filter(|(_, ty)| ty.is_file())
             .map(|(d, _)| d.path());
 
-        #[derive(Default)]
-        struct Cons(Mutex<Vec<HashEntry<32, 32>>>);
-        impl Consumer for Cons {
-            fn consume(&self, value: HashEntry<32, 32>) {
-                self.0.lock().push(value);
-            }
-        }
-        let cons = Arc::new(Cons::default());
+        let mutex: Arc<Mutex<Vec<HashEntry<32, 32>>>> = Default::default();
+        let cons = {
+            let mutex = mutex.clone();
+            Arc::new(DigestConsumer::<32, 32, Sha256, _>::new(move |value| mutex.lock().push(value)))
+            // Arc::new(HashZeroChunksFinder {
+            //     min_size: 16000,
+            //     chunks: Default::default(),
+            // })
+        };
 
-        let runner = HashRunner::run::<_, Sha256, _>(paths.into_iter(), cons.clone(), 128);
+        let runner = HashRunner::run(paths.into_iter(), cons.clone(), 128);
         //sleep(Duration::from_secs(5));
         runner.wait_for_finish();
 
-        let mut vals = cons.0.lock();
+        //println!("Found zero chunks in: {:#?}", cons.chunks.lock());
+
+        let mut vals = mutex.lock();
         let mut vals = HashesChunk::new_sha256(replace(&mut *vals, Vec::new()), false);
-        println!("Processed: {}", vals.data.len());
+        println!(
+            "Processed: {}, total MB: {:.3} ({} bytes)",
+            vals.data.len(),
+            (cons.get_total_bytes() as f64) / (1024.0 * 1024.0),
+            cons.get_total_bytes()
+        );
         let bytes = size_of_val(vals.data.as_slice()) as f64 / (1024.0 * 1024.0);
         println!("Memory taken: {bytes:.3}Mb");
 

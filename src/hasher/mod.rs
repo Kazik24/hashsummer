@@ -4,9 +4,14 @@ mod runner;
 mod sum_file;
 
 use digest::{Digest, FixedOutputReset};
+use generic_array::GenericArray;
+use parking_lot::Mutex;
+use std::marker::PhantomData;
 use std::mem::{align_of, transmute};
 use std::ops::Index;
+use std::path::{Path, PathBuf};
 use std::slice::{from_raw_parts, from_raw_parts_mut};
+use std::sync::atomic::AtomicU64;
 use std::{
     cmp::Ordering,
     fmt::{Debug, LowerHex, UpperHex},
@@ -170,16 +175,16 @@ impl<const N: usize> HashArray<N> {
         assert_eq!(a.len(), b.len());
         let len = self.array.len() / size_of::<DataChunk>();
         assert_eq!(a.len(), len);
-        a.into_iter().copied().zip(b.into_iter().copied())
+        a.iter().copied().zip(b.iter().copied())
     }
 
-    fn aligned_chunks_mut(&mut self) -> &mut [DataChunk] {
+    pub fn aligned_chunks_mut(&mut self) -> &mut [DataChunk] {
         let len = self.array.len() / size_of::<DataChunk>();
         let (_, a, _) = unsafe { self.array.align_to_mut::<DataChunk>() };
         assert_eq!(a.len(), len);
         a
     }
-    fn aligned_chunks(&self) -> &[DataChunk] {
+    pub fn aligned_chunks(&self) -> &[DataChunk] {
         let len = self.array.len() / size_of::<DataChunk>();
         let (_, a, _) = unsafe { self.array.align_to::<DataChunk>() };
         assert_eq!(a.len(), len);
@@ -219,13 +224,13 @@ impl<const N: usize> HashArray<N> {
         let mut rem = 0;
 
         if b <= HALF {
-            for d in a.aligned_chunks_mut().into_iter().rev() {
+            for d in a.aligned_chunks_mut().iter_mut().rev() {
                 let (q, r) = Self::div_half(rem, *d, b);
                 *d = q;
                 rem = r;
             }
         } else {
-            for d in a.aligned_chunks_mut().into_iter().rev() {
+            for d in a.aligned_chunks_mut().iter_mut().rev() {
                 let (q, r) = Self::div_wide(rem, *d, b);
                 *d = q;
                 rem = r;
@@ -371,7 +376,126 @@ pub trait HashDigest {
 }
 
 pub trait Consumer {
-    fn consume(&self, value: HashEntry<32, 32>);
+    type NameState<'a>;
+    type FileState<'a>;
+
+    fn consume_name<'a>(&self, path: &'a Path) -> Self::NameState<'a>;
+
+    fn start_file(&self) -> Self::FileState<'_>;
+
+    fn update_file<'a>(&'a self, state: &mut Self::FileState<'a>, data: &[u8]);
+
+    fn finish_consume(&self, name: Self::NameState<'_>, file: Self::FileState<'_>);
+}
+
+pub struct DigestConsumer<const ID: usize, const DATA: usize, D: Digest, F: Fn(HashEntry<ID, DATA>)> {
+    consume: F,
+    total_bytes: AtomicU64,
+    _phantom: PhantomData<D>,
+}
+
+impl<const ID: usize, const DATA: usize, D: Digest, F: Fn(HashEntry<ID, DATA>)> DigestConsumer<ID, DATA, D, F> {
+    pub fn new(consume: F) -> Self {
+        Self {
+            consume,
+            total_bytes: AtomicU64::new(0),
+            _phantom: PhantomData,
+        }
+    }
+    pub fn get_total_bytes(&self) -> u64 {
+        self.total_bytes.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl<const ID: usize, const DATA: usize, D: Digest, F: Fn(HashEntry<ID, DATA>)> Consumer for DigestConsumer<ID, DATA, D, F> {
+    type NameState<'a> = HashArray<ID>;
+    type FileState<'a> = D;
+
+    fn consume_name<'a>(&self, path: &'a Path) -> Self::NameState<'a> {
+        //todo review file name hashing
+        let mut hasher = D::new_with_prefix(path.to_string_lossy().as_bytes());
+
+        let mut name = HashArray::zero();
+        hasher.finalize_into(GenericArray::from_mut_slice(name.get_mut()));
+        name
+    }
+
+    fn start_file(&self) -> Self::FileState<'_> {
+        D::new()
+    }
+    fn update_file(&self, state: &mut Self::FileState<'_>, data: &[u8]) {
+        self.total_bytes.fetch_add(data.len() as _, std::sync::atomic::Ordering::Relaxed);
+        state.update(data);
+    }
+
+    fn finish_consume(&self, name: Self::NameState<'_>, file: Self::FileState<'_>) {
+        let mut entry = HashEntry {
+            id: name,
+            data: HashArray::zero(),
+        };
+        file.finalize_into(GenericArray::from_mut_slice(entry.data.get_mut()));
+        (self.consume)(entry);
+    }
+}
+
+pub struct HashZeroChunksFinder {
+    pub min_size: u64,
+    pub chunks: Mutex<Vec<PathBuf>>,
+}
+
+impl Consumer for HashZeroChunksFinder {
+    type NameState<'a> = &'a Path;
+    type FileState<'a> = (u64, Option<u64>, bool);
+
+    fn consume_name<'a>(&self, path: &'a Path) -> Self::NameState<'a> {
+        path
+    }
+
+    fn start_file(&self) -> Self::FileState<'_> {
+        (0, None, false)
+    }
+
+    fn update_file(&self, state: &mut Self::FileState<'_>, data: &[u8]) {
+        if state.2 {
+            state.0 += data.len() as u64;
+            return;
+        }
+        let mut iter = data.iter();
+        while iter.len() > 0 {
+            if let Some(pos) = state.1 {
+                let len = iter.len();
+                if let Some(end) = iter.by_ref().position(|&v| v != 0) {
+                    let index = state.0 + end as u64;
+                    if index - pos >= self.min_size {
+                        state.2 = true;
+                    } else {
+                        state.1 = None;
+                    }
+                    state.0 = index + 1;
+                } else {
+                    state.0 += len as u64;
+                }
+            } else {
+                let len = iter.len();
+                if let Some(pos) = iter.by_ref().position(|&v| v == 0) {
+                    let index = state.0 + pos as u64;
+                    state.1 = Some(index);
+                    state.0 = index + 1;
+                } else {
+                    state.0 += len as u64;
+                }
+            }
+        }
+    }
+
+    fn finish_consume(&self, name: Self::NameState<'_>, file: Self::FileState<'_>) {
+        if let Some(v) = file.1 {
+            let footer_size = file.0 - v;
+            if footer_size >= self.min_size {
+                self.chunks.lock().push(name.to_path_buf());
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -427,5 +551,32 @@ mod tests {
         assert!(a < b);
         a.as_bytes_mut()[17] = 1;
         assert!(a > b);
+    }
+
+    #[test]
+    fn test_zero_find() {
+        let test = HashZeroChunksFinder {
+            min_size: 10,
+            chunks: Default::default(),
+        };
+
+        let mut state = test.start_file();
+        test.update_file(&mut state, &[1, 2, 3, 4, 0, 0, 0, 0]);
+        test.update_file(&mut state, &[0, 0, 0, 0, 0, 0, 1, 1, 1]);
+        assert_eq!(state, (17, Some(4), true));
+
+        let mut state = test.start_file();
+        test.update_file(&mut state, &[1, 2, 3, 4, 0, 0, 0, 0]);
+        test.update_file(&mut state, &[0, 0]);
+        test.update_file(&mut state, &[0, 0, 0, 0, 1, 1, 1]);
+        assert_eq!(state, (17, Some(4), true));
+
+        let mut state = test.start_file();
+        test.update_file(&mut state, &[1, 2, 3, 4, 0, 0, 0, 0]);
+        test.update_file(&mut state, &[0, 0]);
+        test.update_file(&mut state, &[0, 0, 0, 0, 1, 1, 1]);
+        test.update_file(&mut state, &[1, 2, 3, 4, 0, 0, 0, 0]);
+        test.update_file(&mut state, &[0, 0, 0, 0, 0, 0, 1, 1, 1]);
+        assert_eq!(state, (34, Some(4), true));
     }
 }

@@ -171,7 +171,7 @@ macro_rules! impl_fixed_int {
 
 impl_fixed_int!(u8, u16, u32, u64, usize);
 
-type NAME = usize;
+type NameTy = usize;
 
 //Variable size integer, that can be read in reverse order
 // 1. 0b0xxx_xxxx - value of range from 0 to 127 (7 data bits)
@@ -186,8 +186,8 @@ const DATA_MASK: u8 = 0x7f;
 const MSB_BIT: u8 = 0x80;
 
 //todo tests
-impl OffsetInt for VarInt<NAME> {
-    const MAX_BYTES: usize = size_of::<NAME>() + 1;
+impl OffsetInt for VarInt<NameTy> {
+    const MAX_BYTES: usize = size_of::<NameTy>() + 1;
 
     fn reverse_read(data: &[u8]) -> (Self, usize) {
         //single byte
@@ -195,12 +195,12 @@ impl OffsetInt for VarInt<NAME> {
         if !msb_bit(d0) {
             return (Self(d0 as _), 1);
         }
-        let mut value = (d0 & DATA_MASK) as NAME;
+        let mut value = (d0 & DATA_MASK) as NameTy;
         //rest of the bytes, read until msb bit is set
         let mut i = 1;
         for &byte in data[..(data.len() - 1)].iter().rev() {
             value = value.wrapping_shl(7);
-            value |= (byte & DATA_MASK) as NAME;
+            value |= (byte & DATA_MASK) as NameTy;
             i += 1;
             if msb_bit(byte) {
                 break;
@@ -215,11 +215,11 @@ impl OffsetInt for VarInt<NAME> {
         if !msb_bit(d0) {
             return (Self(d0 as _), 1);
         }
-        let mut value = (d0 & DATA_MASK) as NAME;
+        let mut value = (d0 & DATA_MASK) as NameTy;
         //rest of the bytes, read until msb bit is set
         let mut i = 1;
         for &byte in &data[1..] {
-            value |= ((byte & DATA_MASK) as NAME).wrapping_shl(i * 7);
+            value |= ((byte & DATA_MASK) as NameTy).wrapping_shl(i * 7);
             i += 1;
             if msb_bit(byte) {
                 break;
