@@ -2,6 +2,7 @@
 
 //#![deny(unsafe_code)]
 
+pub mod app;
 mod consts;
 pub mod file;
 mod hasher;

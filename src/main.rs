@@ -1,7 +1,8 @@
 #![allow(unused)]
 
+use hashsummer::app::App;
 use hashsummer::*;
 
 fn main() {
-    println!("Hello, world!");
+    App::new().run();
 }

@@ -1,6 +1,7 @@
 use crossbeam::channel::{bounded, Receiver, Sender};
 use std::any::Any;
 use std::fs::File;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{spawn, JoinHandle, Thread};
 use std::{
@@ -12,6 +13,7 @@ use std::{
 };
 
 use crate::hasher::{Consumer, DataChunk, HashArray, HashEntry};
+use crate::utils::AveragePerTick;
 use crossbeam::queue::ArrayQueue;
 use digest::{Digest, FixedOutputReset};
 use generic_array::GenericArray;
@@ -38,6 +40,7 @@ struct InnerConfig {
     data_chunks_recycle: Sender<ChunkData>,
     permits: Arc<Permits>,
     max_permits: usize,
+    read_bytes: Arc<AveragePerTick>,
     chan_bound: usize,
     chunk_size: usize, //init chunk size
 }
@@ -57,8 +60,18 @@ fn format_panic_msg(payload: &Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
+pub struct RunnerConfig {
+    pub permits: usize,
+    pub read_bytes_stats: Option<Arc<AveragePerTick>>,
+}
+impl RunnerConfig {
+    pub fn new(permits: usize, read_bytes_stats: Option<Arc<AveragePerTick>>) -> Self {
+        Self { permits, read_bytes_stats }
+    }
+}
+
 impl HashRunner {
-    pub fn run<I, C: Consumer + Send + Sync + 'static>(files: I, consume: Arc<C>, permits: usize) -> Self
+    pub fn run<I, C: Consumer + Send + Sync + 'static>(files: I, consume: Arc<C>, cfg: RunnerConfig) -> Self
     where
         I: Iterator<Item = PathBuf> + Send + 'static,
     {
@@ -82,8 +95,9 @@ impl HashRunner {
             chunk_size: 1024 * 256,
             chan_bound: 32,
             flag: AtomicBool::new(true),
-            permits: Arc::new(Permits::new(permits)),
-            max_permits: permits,
+            read_bytes: cfg.read_bytes_stats.unwrap_or_default(),
+            permits: Arc::new(Permits::new(cfg.permits)),
+            max_permits: cfg.permits,
             data_chunks_supply: crx,
             data_chunks_recycle: ctx,
         });
@@ -129,19 +143,23 @@ impl HashRunner {
         C: Consumer + Send + Sync + 'static,
     {
         while cfg.c.flag.load(Ordering::Relaxed) {
-            let Some(file) = cfg.iter.next() else { break; };
+            let Some(file) = cfg.iter.next() else {
+                break;
+            };
             let permit = cfg.c.permits.clone();
             permit.wait_for_permit();
 
             let (tx, rx) = bounded::<ChunkData>(cfg.c.chan_bound);
             let supply = cfg.c.data_chunks_supply.clone();
             let size = cfg.c.chunk_size;
+            let stat = cfg.c.read_bytes.clone();
             let file2 = file.clone();
             cfg.c.reader_pool.spawn_fifo(move || {
-                let res = Self::read_file(file, supply, tx, size);
+                let res = Self::read_file(&file, supply, tx, size, stat);
                 if let Err(res) = res {
                     //todo save file errors in some list
-                    println!("Error reading file {res}");
+                    let file = file.to_string_lossy();
+                    println!("Error reading file \"{file}\" => {res}");
                 }
             });
             let consumer = cfg.consumer.clone();
@@ -154,15 +172,24 @@ impl HashRunner {
         cfg.c.permits.wait_for_permits(cfg.c.max_permits);
     }
 
-    fn read_file(path: PathBuf, supply: Receiver<ChunkData>, dout: Sender<ChunkData>, chunk_size: usize) -> io::Result<()> {
+    fn read_file(
+        path: &Path,
+        supply: Receiver<ChunkData>,
+        dout: Sender<ChunkData>,
+        chunk_size: usize,
+        stats: Arc<AveragePerTick>,
+    ) -> io::Result<()> {
         let mut file = File::open(path)?;
         loop {
             let mut chunk = supply.recv().unwrap(); //cant disconnect ever
             if chunk.capacity() < chunk_size {
                 chunk = ChunkData::new(chunk_size)
             }
-            let end = !chunk.read_from(&mut file)?; //todo error handling
+            let end = chunk.read_from(&mut file);
+            //don't loose chunk if error occurs
+            stats.append(chunk.len() as _);
             dout.send(chunk).unwrap(); //cant disconnect first
+            let end = !end?; //todo error handling
             if end {
                 return Ok(());
             }

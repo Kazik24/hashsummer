@@ -1,4 +1,6 @@
 use super::codecs::*;
+use crate::file::hashes_chunk::HashesChunk;
+use crate::file::names_chunk::{InfoChunk, NamesChunk};
 use crate::HashArray;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
@@ -61,4 +63,10 @@ where
             initialized: false,
         }
     }
+}
+
+pub enum AnyBlock {
+    Hashes(HashesChunk),
+    Names(NamesChunk),
+    Info(InfoChunk),
 }

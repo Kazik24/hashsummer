@@ -129,8 +129,12 @@ impl FileScanner for DepthFileScanner {
         loop {
             let iter = self.stack.last_mut()?;
             for entry in iter {
-                let Ok(entry) = entry else { continue; };
-                let Ok(file_type) = entry.file_type() else { continue; };
+                let Ok(entry) = entry else {
+                    continue;
+                };
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
                 let mut dir_name = None;
                 let before_name = if file_type.is_dir() {
                     if let Ok(iter) = read_dir(entry.path()) {
@@ -181,10 +185,16 @@ where
             let iter = self.it.stack.last_mut()?;
             let prev = self.dirs.last().copied().flatten();
             for elem in iter {
-                let Ok(elem) = elem else { continue; };
-                let Ok(fty) = elem.file_type() else { continue; };
+                let Ok(elem) = elem else {
+                    continue;
+                };
+                let Ok(fty) = elem.file_type() else {
+                    continue;
+                };
                 let name = elem.file_name();
-                let Some(name) = (self.name_convert)(&name) else { continue; };
+                let Some(name) = (self.name_convert)(&name) else {
+                    continue;
+                };
                 let value = self.bungee.push(prev, name.as_ref());
                 if fty.is_dir() {
                     if let Ok(iter) = read_dir(elem.path()) {
@@ -218,8 +228,8 @@ fn compress_text(text: &[u8], use_burrows_wheeler: bool) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::file::hashes_chunk::{HashesChunk, HashesIterChunk, SortOrder};
-    use crate::store::{compress_sorted_entries, DiffResult, DiffingIter};
-    use crate::utils::MeasureMemory;
+    use crate::store::{compress_sorted_entries, DiffResult, DiffType, DiffingIter};
+    use crate::utils::{AveragePerTick, MeasureMemory};
     use crate::*;
     use digest::Digest;
     use flate2::Compression;
@@ -286,17 +296,32 @@ mod tests {
             .map(|(d, _)| d.path());
 
         let mutex: Arc<Mutex<Vec<HashEntry<32, 32>>>> = Default::default();
+        let hash_stats = Arc::new(AveragePerTick::new(3));
         let cons = {
             let mutex = mutex.clone();
-            Arc::new(DigestConsumer::<32, 32, Sha256, _>::new(move |value| mutex.lock().push(value)))
+            let hash_stats = hash_stats.clone();
+            Arc::new(DigestConsumer::<32, 32, Sha256, _>::new(move |value| {
+                mutex.lock().push(value);
+                hash_stats.append(1);
+            }))
             // Arc::new(HashZeroChunksFinder {
             //     min_size: 16000,
             //     chunks: Default::default(),
             // })
         };
 
-        let runner = HashRunner::run(paths.into_iter(), cons.clone(), 128);
-        //sleep(Duration::from_secs(5));
+        let reads = Arc::new(AveragePerTick::new(3));
+        let cfg = RunnerConfig::new(128, Some(reads.clone()));
+        let runner = HashRunner::run(paths.into_iter(), cons.clone(), cfg);
+        while !runner.is_finished() {
+            sleep(Duration::from_millis(1000));
+            let avg_hashes = hash_stats.tick_and_get_avg();
+            let avg_reads = reads.tick_and_get_avg();
+            println!(
+                "Avg Hash/s = {avg_hashes}, reads = {:.3}MB/s",
+                (avg_reads as f64) / (1024.0 * 1024.0)
+            );
+        }
         runner.wait_for_finish();
 
         //println!("Found zero chunks in: {:#?}", cons.chunks.lock());
