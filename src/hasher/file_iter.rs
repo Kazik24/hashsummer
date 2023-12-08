@@ -315,8 +315,8 @@ mod tests {
         let runner = HashRunner::run(paths.into_iter(), cons.clone(), cfg);
         while !runner.is_finished() {
             sleep(Duration::from_millis(1000));
-            let avg_hashes = hash_stats.tick_and_get_avg();
-            let avg_reads = reads.tick_and_get_avg();
+            let avg_hashes = hash_stats.sample_and_get_avg();
+            let avg_reads = reads.sample_and_get_avg();
             println!(
                 "Avg Hash/s = {avg_hashes}, reads = {:.3}MB/s",
                 (avg_reads as f64) / (1024.0 * 1024.0)
