@@ -56,13 +56,14 @@ impl DepthFileScanner {
         Iter(self)
     }
 
-    pub fn save_to_bungee<F>(self, bungee: &mut BungeeStr, conv: F) -> SaveToBungee<F>
+    pub fn save_to_bungee<'a, F, S>(self, bungee_push: S, conv: F) -> SaveToBungee<F, S>
     where
-        F: FnMut(&OsStr) -> Option<Cow<'_, str>>,
+        F: FnMut(&OsStr, FileType) -> Option<Cow<'_, str>>,
+        S: FnMut(Option<BungeeIndex>, &str) -> Option<BungeeIndex>,
     {
         SaveToBungee {
             it: self,
-            bungee,
+            bungee_push,
             dirs: Vec::new(),
             name_convert: conv,
         }
@@ -167,16 +168,17 @@ pub fn depth_first_files<P: AsRef<Path>>(path: P) -> DepthFileScanner {
     DepthFileScanner::from_dir(path)
 }
 
-pub struct SaveToBungee<'a, F> {
+pub struct SaveToBungee<F, S> {
     it: DepthFileScanner,
     dirs: Vec<Option<BungeeIndex>>,
-    bungee: &'a mut BungeeStr,
+    bungee_push: S,
     name_convert: F,
 }
 
-impl<F> Iterator for SaveToBungee<'_, F>
+impl<F, S> Iterator for SaveToBungee<F, S>
 where
-    F: FnMut(&OsStr) -> Option<Cow<'_, str>>,
+    F: FnMut(&OsStr, FileType) -> Option<Cow<'_, str>>,
+    S: FnMut(Option<BungeeIndex>, &str) -> Option<BungeeIndex>,
 {
     type Item = (Option<BungeeIndex>, DirEntry, FileType);
 
@@ -192,10 +194,10 @@ where
                     continue;
                 };
                 let name = elem.file_name();
-                let Some(name) = (self.name_convert)(&name) else {
+                let Some(name) = (self.name_convert)(&name, fty) else {
                     continue;
                 };
-                let value = self.bungee.push(prev, name.as_ref());
+                let value = (self.bungee_push)(prev, name.as_ref());
                 if fty.is_dir() {
                     if let Ok(iter) = read_dir(elem.path()) {
                         self.it.stack.push(iter);
@@ -227,7 +229,7 @@ fn compress_text(text: &[u8], use_burrows_wheeler: bool) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file::hashes_chunk::{HashesChunk, HashesIterChunk, SortOrder};
+    use crate::file::{HashesChunk, HashesIterChunk, SortOrder};
     use crate::store::{compress_sorted_entries, DiffResult, DiffType, DiffingIter};
     use crate::utils::{AveragePerTick, MeasureMemory};
     use crate::*;
@@ -312,7 +314,7 @@ mod tests {
 
         let reads = Arc::new(AveragePerTick::new(3));
         let cfg = RunnerConfig::new(128, Some(reads.clone()));
-        let runner = HashRunner::run(paths.into_iter(), cons.clone(), cfg);
+        let runner = ScanRunner::run(paths.into_iter(), cons.clone(), cfg);
         while !runner.is_finished() {
             sleep(Duration::from_millis(1000));
             let avg_hashes = hash_stats.sample_and_get_avg();
@@ -424,7 +426,7 @@ mod tests {
         let mut bungee = BungeeStr::new();
         let mut path_len = 0;
         let paths = DepthFileScanner::from_dir(path)
-            .save_to_bungee(&mut bungee, |n| Some(n.to_string_lossy()))
+            .save_to_bungee(|a, b| bungee.push(a, b), |n, _| Some(n.to_string_lossy()))
             .inspect(|v| path_len += v.1.path().as_os_str().len())
             .filter_map(|(i, _, ty)| ty.is_file().then_some(i).flatten())
             .collect::<Vec<_>>();
@@ -460,7 +462,7 @@ mod tests {
     fn file_names_hashed(path: impl AsRef<Path>) -> (BungeeStr, Vec<(BungeeIndex, HashArray<32>)>) {
         let mut bungee = BungeeStr::new();
         let files = depth_first_files(path)
-            .save_to_bungee(&mut bungee, |n| Some(n.to_string_lossy()))
+            .save_to_bungee(|a, b| bungee.push(a, b), |n, _| Some(n.to_string_lossy()))
             .filter_map(|(i, e, ty)| Some((ty.is_file().then_some(i).flatten()?, e)))
             .map(|(i, entry)| {
                 let mut array = HashArray::zero();

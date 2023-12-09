@@ -9,6 +9,12 @@ pub struct NamesChunk {
 
 pub struct InfoChunk {}
 
+impl NamesChunk {
+    pub fn new(bungee: BungeeStr, indexes: Vec<BungeeIndex>) -> Self {
+        Self { bungee, indexes }
+    }
+}
+
 impl MeasureMemory for NamesChunk {
     fn memory_usage(&self) -> usize {
         size_of::<Self>() + (self.indexes.capacity() * size_of::<BungeeIndex>()) + self.bungee.memory_usage()

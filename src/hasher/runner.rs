@@ -20,7 +20,7 @@ use generic_array::GenericArray;
 use parking_lot::{Condvar, Mutex};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 
-pub struct HashRunner {
+pub struct ScanRunner {
     //buffer for reusing allocations
     scheduler: JoinHandle<()>,
     config: Arc<InnerConfig>,
@@ -70,7 +70,7 @@ impl RunnerConfig {
     }
 }
 
-impl HashRunner {
+impl ScanRunner {
     pub fn run<I, C: Consumer + Send + Sync + 'static>(files: I, consume: Arc<C>, cfg: RunnerConfig) -> Self
     where
         I: Iterator<Item = PathBuf> + Send + 'static,

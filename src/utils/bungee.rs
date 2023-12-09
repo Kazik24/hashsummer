@@ -1,4 +1,5 @@
 use crate::utils::MeasureMemory;
+use compact_str::CompactString;
 use std::io::Read;
 use std::iter::repeat;
 use std::marker::PhantomData;
@@ -306,6 +307,12 @@ impl BungeeStr {
             result.push_str(v);
         }
         result
+    }
+
+    pub fn raw_path(&self, at: BungeeIndex) -> Vec<CompactString> {
+        let mut path = self.reverse_follow_iter(at).map(|(s, _)| CompactString::new(s)).collect::<Vec<_>>();
+        path.reverse();
+        path
     }
 
     pub fn raw_bytes(&self) -> &[u8] {
