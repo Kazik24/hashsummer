@@ -18,11 +18,9 @@ pub fn snapshot_files(path: &Path) {
         DepthFileScanner::from_dir(path)
             .save_to_bungee(move |a, b| pb.push(a, b), |v, t| Some(v.to_string_lossy()))
             .into_iter()
-            .filter(|v| v.2.is_file())
+            .filter_map(|(i, d, t)| Some((t.is_file().then_some(i).flatten()?, d, i)))
             .map(move |(i, d, _)| {
-                if let Some(i) = i {
-                    pi.push(i);
-                }
+                pi.push(i);
                 d.path()
             })
     };

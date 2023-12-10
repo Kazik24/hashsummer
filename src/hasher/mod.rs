@@ -15,6 +15,7 @@ use std::sync::atomic::AtomicU64;
 use std::{
     cmp::Ordering,
     fmt::{Debug, LowerHex, UpperHex},
+    io,
     mem::size_of,
 };
 
@@ -386,6 +387,11 @@ pub trait Consumer {
     fn update_file<'a>(&'a self, state: &mut Self::FileState<'a>, data: &[u8]);
 
     fn finish_consume(&self, name: Self::NameState<'_>, file: Self::FileState<'_>);
+
+    fn on_error(&self, error: io::Error, path: &Path) {
+        let file = path.to_string_lossy();
+        println!("Error reading file \"{file}\" => {error}");
+    }
 }
 
 pub struct DigestConsumer<const ID: usize, const DATA: usize, D: Digest, F: Fn(HashEntry<ID, DATA>)> {

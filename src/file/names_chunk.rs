@@ -17,6 +17,6 @@ impl NamesChunk {
 
 impl MeasureMemory for NamesChunk {
     fn memory_usage(&self) -> usize {
-        size_of::<Self>() + (self.indexes.capacity() * size_of::<BungeeIndex>()) + self.bungee.memory_usage()
+        (self.indexes.capacity() * size_of::<BungeeIndex>()) + self.bungee.memory_usage()
     }
 }

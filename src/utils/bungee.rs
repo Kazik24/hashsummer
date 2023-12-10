@@ -322,7 +322,7 @@ impl BungeeStr {
 
 impl MeasureMemory for BungeeStr {
     fn memory_usage(&self) -> usize {
-        size_of::<Self>() + self.inner.data.capacity()
+        self.inner.data.capacity()
     }
 }
 

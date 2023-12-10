@@ -1,9 +1,11 @@
 use crossbeam::channel::{bounded, Receiver, Sender};
 use std::any::Any;
 use std::fs::File;
+use std::iter::repeat_with;
+use std::mem::size_of_val;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::thread::{spawn, JoinHandle, Thread};
+use std::thread::{available_parallelism, spawn, JoinHandle, Thread};
 use std::{
     io,
     io::{ErrorKind, Read},
@@ -13,7 +15,7 @@ use std::{
 };
 
 use crate::hasher::{Consumer, DataChunk, HashArray, HashEntry};
-use crate::utils::AveragePerTick;
+use crate::utils::{AveragePerTick, LendingStack, MeasureMemory};
 use crossbeam::queue::ArrayQueue;
 use digest::{Digest, FixedOutputReset};
 use generic_array::GenericArray;
@@ -36,8 +38,7 @@ struct InnerConfig {
     flag: AtomicBool,
     reader_pool: ThreadPool,
     worker_pool: ThreadPool,
-    data_chunks_supply: Receiver<ChunkData>,
-    data_chunks_recycle: Sender<ChunkData>,
+    data_chunks: LendingStack<ChunkData>,
     permits: Arc<Permits>,
     max_permits: usize,
     read_bytes: Arc<AveragePerTick>,
@@ -63,10 +64,33 @@ fn format_panic_msg(payload: &Box<dyn std::any::Any + Send>) -> String {
 pub struct RunnerConfig {
     pub permits: usize,
     pub read_bytes_stats: Option<Arc<AveragePerTick>>,
+    pub drive_type: DriveType,
+    pub buffer_chunk_size: usize,
+    pub max_buffer_chunks: usize,
+    pub buffer_chunks_per_file: usize,
 }
+
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub enum DriveType {
+    Ssd,
+    Hdd,
+    Custom { read_threads: usize, processing_threads: usize },
+}
+
 impl RunnerConfig {
-    pub fn new(permits: usize, read_bytes_stats: Option<Arc<AveragePerTick>>) -> Self {
-        Self { permits, read_bytes_stats }
+    pub const fn new(permits: usize, read_bytes_stats: Option<Arc<AveragePerTick>>) -> Self {
+        Self {
+            permits,
+            read_bytes_stats,
+            drive_type: DriveType::Ssd,
+            buffer_chunk_size: 1024 * 256,
+            max_buffer_chunks: 1024,
+            buffer_chunks_per_file: 32,
+        }
+    }
+    pub fn hdd(mut self) -> Self {
+        self.drive_type = DriveType::Hdd;
+        self
     }
 }
 
@@ -76,30 +100,35 @@ impl ScanRunner {
         I: Iterator<Item = PathBuf> + Send + 'static,
     {
         let buffers = 1024;
-        let (ctx, crx) = bounded(buffers);
-        for _ in 0..buffers {
-            ctx.try_send(ChunkData::zero()).unwrap();
-        }
+
+        let cpus = available_parallelism().map(|v| v.get()).unwrap_or(1);
+        let (read_threads, hash_threads) = match cfg.drive_type {
+            DriveType::Hdd => (1, cpus.min(4)), //parallel reads are not good for HDDs
+            DriveType::Ssd => (cpus, cpus),     //read as much in parallel as reasonably available
+            DriveType::Custom {
+                read_threads,
+                processing_threads,
+            } => (read_threads.max(1), processing_threads.max(1)),
+        };
 
         let c = Arc::new(InnerConfig {
-            worker_pool: ThreadPoolBuilder::new()
-                .num_threads(16)
-                .panic_handler(pool_panic_handler)
-                .build()
-                .unwrap(),
             reader_pool: ThreadPoolBuilder::new()
-                .num_threads(16)
+                .num_threads(read_threads)
                 .panic_handler(pool_panic_handler)
                 .build()
                 .unwrap(),
-            chunk_size: 1024 * 256,
-            chan_bound: 32,
+            worker_pool: ThreadPoolBuilder::new()
+                .num_threads(hash_threads)
+                .panic_handler(pool_panic_handler)
+                .build()
+                .unwrap(),
+            chunk_size: cfg.buffer_chunk_size.max(16),
+            chan_bound: cfg.buffer_chunks_per_file.max(1),
             flag: AtomicBool::new(true),
             read_bytes: cfg.read_bytes_stats.unwrap_or_default(),
             permits: Arc::new(Permits::new(cfg.permits)),
             max_permits: cfg.permits,
-            data_chunks_supply: crx,
-            data_chunks_recycle: ctx,
+            data_chunks: LendingStack::new(repeat_with(|| ChunkData::zero()).take(cfg.max_buffer_chunks.max(1)).collect()),
         });
 
         let cfg = Config {
@@ -150,20 +179,19 @@ impl ScanRunner {
             permit.wait_for_permit();
 
             let (tx, rx) = bounded::<ChunkData>(cfg.c.chan_bound);
-            let supply = cfg.c.data_chunks_supply.clone();
+            let supply = cfg.c.data_chunks.clone();
             let size = cfg.c.chunk_size;
             let stat = cfg.c.read_bytes.clone();
             let file2 = file.clone();
+            let consumer = cfg.consumer.clone();
             cfg.c.reader_pool.spawn_fifo(move || {
                 let res = Self::read_file(&file, supply, tx, size, stat);
-                if let Err(res) = res {
-                    //todo save file errors in some list
-                    let file = file.to_string_lossy();
-                    println!("Error reading file \"{file}\" => {res}");
+                if let Err(err) = res {
+                    consumer.on_error(err, &file);
                 }
             });
             let consumer = cfg.consumer.clone();
-            let recycle = cfg.c.data_chunks_recycle.clone();
+            let recycle = cfg.c.data_chunks.clone();
             cfg.c.worker_pool.spawn_fifo(move || {
                 Self::process_file(file2, rx, recycle, &*consumer, permit);
             });
@@ -174,14 +202,14 @@ impl ScanRunner {
 
     fn read_file(
         path: &Path,
-        supply: Receiver<ChunkData>,
+        supply: LendingStack<ChunkData>,
         dout: Sender<ChunkData>,
         chunk_size: usize,
         stats: Arc<AveragePerTick>,
     ) -> io::Result<()> {
         let mut file = File::open(path)?;
         loop {
-            let mut chunk = supply.recv().unwrap(); //cant disconnect ever
+            let mut chunk = supply.lend();
             if chunk.capacity() < chunk_size {
                 chunk = ChunkData::new(chunk_size)
             }
@@ -189,14 +217,15 @@ impl ScanRunner {
             //don't loose chunk if error occurs
             stats.append(chunk.len() as _);
             dout.send(chunk).unwrap(); //cant disconnect first
-            let end = !end?; //todo error handling
-            if end {
-                return Ok(());
+            match end {
+                Ok(false) => return Ok(()),
+                Ok(true) => {}
+                Err(err) => return Err(err),
             }
         }
     }
 
-    fn process_file<C>(path: PathBuf, din: Receiver<ChunkData>, recycle: Sender<ChunkData>, consumer: &C, signal: Arc<Permits>)
+    fn process_file<C>(path: PathBuf, din: Receiver<ChunkData>, recycle: LendingStack<ChunkData>, consumer: &C, signal: Arc<Permits>)
     where
         C: Consumer,
     {
@@ -205,7 +234,7 @@ impl ScanRunner {
 
         while let Ok(chunk) = din.recv() {
             consumer.update_file(&mut hasher, &chunk);
-            recycle.send(chunk).unwrap();
+            recycle.give_back(chunk);
         }
         consumer.finish_consume(name, hasher);
         signal.add_permit();
@@ -231,8 +260,8 @@ impl ChunkData {
         }
     }
 
-    /// Read as much bytes as possible to fill this chunk, discards old content
-    pub fn read_from<R: Read>(&mut self, reader: &mut R) -> Result<bool, std::io::Error> {
+    /// Read as much bytes as possible to fill this chunk, discards old content, return true if chunk was read fully.
+    pub fn read_from<R: Read>(&mut self, reader: &mut R) -> Result<bool, io::Error> {
         self.length = 0;
         let mut buf = &mut *self.array;
         while !buf.is_empty() {
@@ -263,6 +292,12 @@ impl Deref for ChunkData {
     type Target = [u8];
     fn deref(&self) -> &Self::Target {
         &self.array[..self.length]
+    }
+}
+
+impl MeasureMemory for ChunkData {
+    fn memory_usage(&self) -> usize {
+        size_of_val(&self.array[..])
     }
 }
 
@@ -315,12 +350,13 @@ impl Permits {
 mod tests {
     use crate::hasher::runner::Permits;
     use std::sync::Arc;
-    use std::thread::{scope, sleep};
+    use std::thread::{available_parallelism, scope, sleep};
     use std::time::Duration;
 
     #[test]
     fn test_permits() {
         let perm = Permits::new(3);
+        println!("{:?}", available_parallelism());
 
         scope(|c| {
             perm.wait_for_permit();

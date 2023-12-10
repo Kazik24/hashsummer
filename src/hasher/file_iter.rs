@@ -315,7 +315,7 @@ mod tests {
         let reads = Arc::new(AveragePerTick::new(3));
         let cfg = RunnerConfig::new(128, Some(reads.clone()));
         let runner = ScanRunner::run(paths.into_iter(), cons.clone(), cfg);
-        while !runner.is_finished() {
+        loop {
             sleep(Duration::from_millis(1000));
             let avg_hashes = hash_stats.sample_and_get_avg();
             let avg_reads = reads.sample_and_get_avg();
@@ -323,6 +323,9 @@ mod tests {
                 "Avg Hash/s = {avg_hashes}, reads = {:.3}MB/s",
                 (avg_reads as f64) / (1024.0 * 1024.0)
             );
+            if runner.is_finished() {
+                break;
+            }
         }
         runner.wait_for_finish();
 

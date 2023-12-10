@@ -193,7 +193,7 @@ impl HashesChunk {
 
 impl MeasureMemory for HashesChunk {
     fn memory_usage(&self) -> usize {
-        size_of::<Self>() + self.data.capacity() * size_of::<DataEntry>()
+        self.data.capacity() * size_of::<DataEntry>()
     }
 }
 

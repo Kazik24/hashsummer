@@ -1,16 +1,26 @@
 mod bungee;
 mod cursor;
+mod lifo;
 mod sort;
 
 pub use bungee::*;
+pub use lifo::*;
 use parking_lot::RwLock;
 pub use sort::*;
 use std::cmp::min;
 use std::iter::repeat_with;
+use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 pub trait MeasureMemory {
     fn memory_usage(&self) -> usize;
+
+    fn total_memory_usage(&self) -> usize
+    where
+        Self: Sized,
+    {
+        self.memory_usage() + size_of::<Self>()
+    }
 }
 
 /// Struct for averaging a number over a period of time with moving average.
