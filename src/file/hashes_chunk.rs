@@ -73,7 +73,7 @@ impl HashesHeader {
 
     pub fn to_array(&self) -> HashArray<64> {
         let mut array = HashArray::zero();
-        array.get_mut()[..BLOCK_HEADER_MAGIC.len()].copy_from_slice(BLOCK_HEADER_MAGIC);
+        array.get_mut()[..BLOCK_HEADER_MAGIC.len()].copy_from_slice(&BLOCK_HEADER_MAGIC);
         let mut flags = 0;
         flags |= self.sort as u32 & 0x3;
         array.set_u32(4, flags);

@@ -67,7 +67,7 @@ pub struct RunnerConfig {
     pub drive_type: DriveType,
     pub buffer_chunk_size: usize,
     pub max_buffer_chunks: usize,
-    pub buffer_chunks_per_file: usize,
+    pub max_buffer_chunks_per_file: usize,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -85,7 +85,7 @@ impl RunnerConfig {
             drive_type: DriveType::Ssd,
             buffer_chunk_size: 1024 * 256,
             max_buffer_chunks: 1024,
-            buffer_chunks_per_file: 32,
+            max_buffer_chunks_per_file: 32,
         }
     }
     pub fn hdd(mut self) -> Self {
@@ -123,7 +123,7 @@ impl ScanRunner {
                 .build()
                 .unwrap(),
             chunk_size: cfg.buffer_chunk_size.max(16),
-            chan_bound: cfg.buffer_chunks_per_file.max(1),
+            chan_bound: cfg.max_buffer_chunks_per_file.max(1),
             flag: AtomicBool::new(true),
             read_bytes: cfg.read_bytes_stats.unwrap_or_default(),
             permits: Arc::new(Permits::new(cfg.permits)),

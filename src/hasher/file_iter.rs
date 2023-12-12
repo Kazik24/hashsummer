@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn test_runner() {
-        let path = Path::new("test_files");
+        let path = Path::new(".");
 
         println!("Scanning path: {:?}", path);
         let paths = DepthFileScanner::from_dir(path)

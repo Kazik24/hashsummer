@@ -1,11 +1,13 @@
 mod bungee;
 mod cursor;
 mod lifo;
+mod size;
 mod sort;
 
 pub use bungee::*;
 pub use lifo::*;
 use parking_lot::RwLock;
+pub use size::*;
 pub use sort::*;
 use std::cmp::min;
 use std::iter::repeat_with;

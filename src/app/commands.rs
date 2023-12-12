@@ -1,7 +1,7 @@
 use crate::file::AnyBlock::Names;
 use crate::file::HashesChunk;
 use crate::file::NamesChunk;
-use crate::utils::{BungeeIndex, BungeeStr};
+use crate::utils::{BungeeIndex, BungeeStr, ByteSize};
 use crate::{DepthFileScanner, DigestConsumer, HashEntry, RunnerConfig, ScanRunner};
 use parking_lot::Mutex;
 use sha2::Sha256;
@@ -35,7 +35,7 @@ pub fn snapshot_files(path: &Path) {
         // })
     };
     let cfg = RunnerConfig::new(128, None);
-    let runner = ScanRunner::run(paths.into_iter(), cons, cfg);
+    let runner = ScanRunner::run(paths, cons, cfg);
     runner.wait_for_finish();
 
     let vals = Arc::into_inner(mutex).expect("More than one mutex reference").into_inner();
@@ -55,6 +55,37 @@ pub fn snapshot_files(path: &Path) {
     println!("last:  {:?}", hashes.data.last().unwrap());
 }
 
+#[derive(Default, Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub struct FileCounts {
+    pub dirs: u64,
+    pub files: u64,
+    pub symlinks: u64,
+    pub total_size: ByteSize,
+    pub empty_files: u64,
+    pub errors: u64,
+}
+
+impl FileCounts {
+    pub fn count_all_in(path: &Path) -> Self {
+        let mut files = FileCounts::default();
+        for (entry, typ) in DepthFileScanner::from_dir(path).into_iter() {
+            if typ.is_file() {
+                files.files += 1;
+                match entry.metadata() {
+                    Ok(meta) if meta.len() == 0 => files.empty_files += 1,
+                    Ok(meta) => files.total_size += meta.len(),
+                    Err(_err) => files.errors += 1,
+                }
+            } else if typ.is_dir() {
+                files.dirs += 1;
+            } else if typ.is_symlink() {
+                files.symlinks += 1;
+            }
+        }
+        files
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,5 +96,13 @@ mod tests {
         let path = Path::new(".");
 
         snapshot_files(path);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_count_all() {
+        let path = Path::new(".");
+        let counts = FileCounts::count_all_in(path);
+        println!("Counts: {counts:#?}");
     }
 }
