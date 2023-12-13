@@ -70,11 +70,20 @@ pub struct RunnerConfig {
     pub max_buffer_chunks_per_file: usize,
 }
 
+// todo, checking at runtime if file is on hdd or ssd
+// link: https://devblogs.microsoft.com/oldnewthing/20201023-00/?p=104395
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum DriveType {
     Ssd,
     Hdd,
-    Custom { read_threads: usize, processing_threads: usize },
+    /// Warning, when specifying custom thread number, there should be at least same number of
+    /// processing_threads as read_threads. If number of processing_threads is lower, in current
+    /// implementation the runner tasks might starve, and halt if there is not enough buffers to use by all
+    /// tasks.
+    Custom {
+        read_threads: usize,
+        processing_threads: usize,
+    },
 }
 
 impl RunnerConfig {
@@ -99,8 +108,6 @@ impl ScanRunner {
     where
         I: Iterator<Item = PathBuf> + Send + 'static,
     {
-        let buffers = 1024;
-
         let cpus = available_parallelism().map(|v| v.get()).unwrap_or(1);
         let (read_threads, hash_threads) = match cfg.drive_type {
             DriveType::Hdd => (1, cpus.min(4)), //parallel reads are not good for HDDs
@@ -111,19 +118,25 @@ impl ScanRunner {
             } => (read_threads.max(1), processing_threads.max(1)),
         };
 
+        if read_threads > hash_threads {
+            println!("Warning, configuration might halt the runner");
+        }
+
         let c = Arc::new(InnerConfig {
             reader_pool: ThreadPoolBuilder::new()
                 .num_threads(read_threads)
+                .thread_name(|i| format!("reader-{i}"))
                 .panic_handler(pool_panic_handler)
                 .build()
                 .unwrap(),
             worker_pool: ThreadPoolBuilder::new()
                 .num_threads(hash_threads)
+                .thread_name(|i| format!("worker-{i}"))
                 .panic_handler(pool_panic_handler)
                 .build()
                 .unwrap(),
             chunk_size: cfg.buffer_chunk_size.max(16),
-            chan_bound: cfg.max_buffer_chunks_per_file.max(1),
+            chan_bound: cfg.max_buffer_chunks_per_file,
             flag: AtomicBool::new(true),
             read_bytes: cfg.read_bytes_stats.unwrap_or_default(),
             permits: Arc::new(Permits::new(cfg.permits)),
@@ -213,18 +226,17 @@ impl ScanRunner {
             if chunk.capacity() < chunk_size {
                 chunk = ChunkData::new(chunk_size)
             }
-            let end = chunk.read_from(&mut file);
+            let should_continue = chunk.read_from(&mut file);
             //don't loose chunk if error occurs
             stats.append(chunk.len() as _);
             dout.send(chunk).unwrap(); //cant disconnect first
-            match end {
-                Ok(false) => return Ok(()),
+            match should_continue {
                 Ok(true) => {}
+                Ok(false) => return Ok(()),
                 Err(err) => return Err(err),
             }
         }
     }
-
     fn process_file<C>(path: PathBuf, din: Receiver<ChunkData>, recycle: LendingStack<ChunkData>, consumer: &C, signal: Arc<Permits>)
     where
         C: Consumer,

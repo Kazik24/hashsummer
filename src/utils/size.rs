@@ -2,7 +2,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::ops::{Add, AddAssign, Sub, SubAssign};
 
 #[derive(Default, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
-pub struct ByteSize(u64);
+pub struct ByteSize(pub u64);
 
 impl From<u64> for ByteSize {
     fn from(value: u64) -> Self {
@@ -93,5 +93,11 @@ impl Debug for ByteSize {
             Display::fmt(&frac, f)?;
         }
         write!(f, " {prefix}B")
+    }
+}
+
+impl Display for ByteSize {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(self, f)
     }
 }

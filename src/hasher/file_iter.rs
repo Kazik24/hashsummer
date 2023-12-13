@@ -231,7 +231,7 @@ mod tests {
     use super::*;
     use crate::file::{HashesChunk, HashesIterChunk, SortOrder};
     use crate::store::{compress_sorted_entries, DiffResult, DiffType, DiffingIter};
-    use crate::utils::{AveragePerTick, MeasureMemory};
+    use crate::utils::{AveragePerTick, ByteSize, MeasureMemory};
     use crate::*;
     use digest::Digest;
     use flate2::Compression;
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn test_runner() {
-        let path = Path::new(".");
+        let path = Path::new("../..");
 
         println!("Scanning path: {:?}", path);
         let paths = DepthFileScanner::from_dir(path)
@@ -313,16 +313,20 @@ mod tests {
         };
 
         let reads = Arc::new(AveragePerTick::new(3));
-        let cfg = RunnerConfig::new(128, Some(reads.clone()));
+        let mut cfg = RunnerConfig::new(256, Some(reads.clone()));
+        cfg.drive_type = DriveType::Custom {
+            read_threads: 128,
+            processing_threads: 128,
+        };
+        cfg.max_buffer_chunks = 4096;
+        cfg.buffer_chunk_size = 1024 * 256;
+        cfg.max_buffer_chunks_per_file = 32; //todo when this is too large, and buffer_chunk_size is too small, the runner halts
         let runner = ScanRunner::run(paths.into_iter(), cons.clone(), cfg);
         loop {
             sleep(Duration::from_millis(1000));
             let avg_hashes = hash_stats.sample_and_get_avg();
-            let avg_reads = reads.sample_and_get_avg();
-            println!(
-                "Avg Hash/s = {avg_hashes}, reads = {:.3}MB/s",
-                (avg_reads as f64) / (1024.0 * 1024.0)
-            );
+            let avg_reads = ByteSize(reads.sample_and_get_avg());
+            println!("Avg Hash/s = {avg_hashes}, reads = {avg_reads:.3}/s",);
             if runner.is_finished() {
                 break;
             }
@@ -334,9 +338,9 @@ mod tests {
         let mut vals = mutex.lock();
         let mut vals = HashesChunk::new_sha256(replace(&mut *vals, Vec::new()), false);
         println!(
-            "Processed: {}, total MB: {:.3} ({} bytes)",
+            "Processed: {}, total: {:.3} ({} bytes)",
             vals.data.len(),
-            (cons.get_total_bytes() as f64) / (1024.0 * 1024.0),
+            ByteSize(cons.get_total_bytes()),
             cons.get_total_bytes()
         );
         let bytes = size_of_val(vals.data.as_slice()) as f64 / (1024.0 * 1024.0);

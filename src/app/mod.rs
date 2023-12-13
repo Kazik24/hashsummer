@@ -1,6 +1,8 @@
 mod commands;
 mod console;
+mod menu;
 mod navigation;
+mod status_bar;
 
 use crate::app::console::ConsoleWidget;
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode};
@@ -19,6 +21,10 @@ pub struct App {
 
 pub trait Drawable {
     fn draw(&self, frame: &mut Frame, area: Rect);
+}
+
+pub trait EventDispatcher {
+    fn dispatch(&mut self, event: Event);
 }
 
 impl App {
