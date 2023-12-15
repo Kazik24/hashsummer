@@ -11,7 +11,11 @@ digest = "0.10.5"
 generic-array = "0.14.6"
 rustfft = "6.0.1"
 crossbeam = "0.8.2"
+num = "0.4.1"
+num-traits = "0.2.17"
+num-derive = "0.4.1"
 futures = { version = "0.3", features = ["thread-pool"]}
+reed-solomon = "0.2.1" # error correction and detection
 sha2 = "0.10.6"
 compress = "0.2.1"
 flate2 = "1.0.25"

@@ -1,4 +1,4 @@
-use crate::file::BLOCK_HEADER_MAGIC;
+use crate::file::chunks::BLOCK_HEADER_MAGIC;
 use crate::utils::{BungeeIndex, BungeeStr, MeasureMemory};
 use crate::{DataEntry, HashArray, HashEntry};
 use rustfft::num_traits::ToPrimitive;

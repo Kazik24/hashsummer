@@ -229,7 +229,7 @@ fn compress_text(text: &[u8], use_burrows_wheeler: bool) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file::{HashesChunk, HashesIterChunk, SortOrder};
+    use crate::file::chunks::{HashesChunk, HashesIterChunk, SortOrder};
     use crate::store::{compress_sorted_entries, DiffResult, DiffType, DiffingIter};
     use crate::utils::{AveragePerTick, ByteSize, MeasureMemory};
     use crate::*;
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn test_runner() {
-        let path = Path::new("../..");
+        let path = Path::new("D:\\dev");
 
         println!("Scanning path: {:?}", path);
         let paths = DepthFileScanner::from_dir(path)

@@ -1,6 +1,4 @@
-use crate::file::AnyBlock::Names;
-use crate::file::HashesChunk;
-use crate::file::NamesChunk;
+use crate::file::chunks::{HashesChunk, NamesChunk};
 use crate::utils::{BungeeIndex, BungeeStr, ByteSize};
 use crate::{DepthFileScanner, DigestConsumer, HashEntry, RunnerConfig, ScanRunner};
 use parking_lot::Mutex;

@@ -1,10 +1,7 @@
+pub mod chunks;
 mod codecs;
-mod hashes_chunk;
-mod names_chunk;
 mod sum_file;
 
-pub use hashes_chunk::*;
-pub use names_chunk::*;
 pub use sum_file::*;
 
 use std::io::{BufReader, Read, Seek, Write};

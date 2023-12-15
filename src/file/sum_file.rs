@@ -1,14 +1,13 @@
 use super::codecs::*;
-use crate::file::hashes_chunk::HashesChunk;
-use crate::file::names_chunk::{InfoChunk, NamesChunk};
+use crate::file::chunks::{AnyBlock, BlockType, HashesChunk, InfoChunk, NamesChunk};
+use crate::utils::with_counted_read;
 use crate::{HashArray, SumFileHeader};
 use std::fs::File;
 use std::io;
-use std::io::{ErrorKind, Read, Seek, Write};
+use std::io::{Error, ErrorKind, Read, Seek, Write};
 use std::path::Path;
 
 pub const MAIN_HEADER_MAGIC: [u8; 4] = *b"HsUm";
-pub const BLOCK_HEADER_MAGIC: [u8; 4] = *b"HsBk";
 
 //must be sorted
 pub static CODECS: &[([u8; 3], &dyn VersionCodec)] = &[
@@ -42,19 +41,6 @@ pub struct MainHeader {
     flags: u8,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
-#[repr(u8)]
-pub enum BlockType {
-    #[default]
-    None = 0,
-    MainHeader = 1, //main header is always 64 bytes, should be only one in file,
-    Hashes = 2,     //hashes chunk
-    Names = 3,      //names of files for corresponding hashes
-
-    Reserved = 254,
-    MoreBlocks = 255,
-}
-
 impl MainHeader {
     pub fn new() -> Self {
         Self {
@@ -85,29 +71,6 @@ impl MainHeader {
     }
 }
 
-fn with_counted_read<R: Read, T>(read: &mut R, func: impl FnOnce(&mut dyn Read) -> io::Result<T>) -> io::Result<(T, u64)> {
-    struct StreamCountWrapper<'a, R>(&'a mut R, u64, bool);
-    impl<R: Read> Read for StreamCountWrapper<'_, R> {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            let res = self.0.read(buf);
-            match &res {
-                Ok(count) => self.1 += *count as u64,
-                Err(err) if err.kind() != ErrorKind::Interrupted => self.2 = true, //register error
-                _ => {}
-            }
-            res
-        }
-    }
-    //count how many bytes was read from stream
-    let mut wrapper = StreamCountWrapper(read, 0, false);
-    let result = func(&mut wrapper)?;
-    if wrapper.2 {
-        //if there was unpropagated error, raise it here.
-        return Err(io::Error::new(ErrorKind::Other, "IO Error was ignored by file codec"));
-    }
-    Ok((result, wrapper.1))
-}
-
 impl SumFile<File> {
     pub fn open(path: &Path) -> io::Result<Self> {
         let mut file = File::open(path)?;
@@ -120,9 +83,28 @@ impl SumFile<File> {
             file,
         })
     }
+}
 
-    pub fn blocks(&self) -> &[AnyBlock] {
-        &[]
+pub enum BlockError {
+    /// End of block stream
+    NoBlock,
+    UnknownBlockType,
+    Io(io::Error),
+}
+
+impl From<BlockError> for io::Error {
+    fn from(value: BlockError) -> Self {
+        match value {
+            BlockError::NoBlock => io::Error::new(ErrorKind::InvalidData, "No more blocks"),
+            BlockError::UnknownBlockType => io::Error::new(ErrorKind::InvalidData, "Unknown block type"),
+            BlockError::Io(e) => e,
+        }
+    }
+}
+
+impl From<io::Error> for BlockError {
+    fn from(value: Error) -> Self {
+        BlockError::Io(value)
     }
 }
 
@@ -138,10 +120,21 @@ where
             initialized: false,
         }
     }
-}
 
-pub enum AnyBlock {
-    Hashes(HashesChunk),
-    Names(NamesChunk),
-    Info(InfoChunk),
+    pub fn read_next_block(&mut self) -> Result<AnyBlock, BlockError> {
+        let mut first_chunk = HashArray::<64>::zero();
+        match self.file.read_exact(first_chunk.as_bytes_mut()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Err(BlockError::NoBlock), //no blocks
+            Err(e) => return Err(BlockError::Io(e)),
+        }
+
+        let block_type = BlockType::decode_magic(first_chunk.get_slice(0))?.ok_or(BlockError::UnknownBlockType)?;
+
+        todo!()
+    }
+
+    pub fn write_next_block(&mut self, block: &AnyBlock) -> io::Result<()> {
+        Ok(())
+    }
 }

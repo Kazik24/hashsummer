@@ -1,10 +1,12 @@
 mod bungee;
 mod cursor;
+mod io;
 mod lifo;
 mod size;
 mod sort;
 
 pub use bungee::*;
+pub use io::*;
 pub use lifo::*;
 use parking_lot::RwLock;
 pub use size::*;
