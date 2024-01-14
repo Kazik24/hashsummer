@@ -314,10 +314,8 @@ mod tests {
 
         let reads = Arc::new(AveragePerTick::new(3));
         let mut cfg = RunnerConfig::new(256, Some(reads.clone()));
-        cfg.drive_type = DriveType::Custom {
-            read_threads: 128,
-            processing_threads: 128,
-        };
+        //warning: antivirus might significantly slow this down regardless of config, better to disable it
+        cfg.drive_type = DriveType::Ssd;
         cfg.max_buffer_chunks = 4096;
         cfg.buffer_chunk_size = 1024 * 256;
         cfg.max_buffer_chunks_per_file = 32; //todo when this is too large, and buffer_chunk_size is too small, the runner halts
@@ -326,7 +324,7 @@ mod tests {
             sleep(Duration::from_millis(1000));
             let avg_hashes = hash_stats.sample_and_get_avg();
             let avg_reads = ByteSize(reads.sample_and_get_avg());
-            println!("Avg Hash/s = {avg_hashes}, reads = {avg_reads:.3}/s",);
+            println!("Avg Hash/s = {avg_hashes:<9} reads = {avg_reads:<9.3}/s",);
             if runner.is_finished() {
                 break;
             }

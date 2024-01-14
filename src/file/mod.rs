@@ -1,4 +1,5 @@
 pub mod chunks;
+mod codec_utils;
 mod codecs;
 mod sum_file;
 

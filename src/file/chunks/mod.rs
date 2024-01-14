@@ -30,13 +30,24 @@ pub enum BlockType {
 }
 
 impl BlockType {
-    pub const MAGIC_SIZE: usize = 4;
+    pub const MAGIC_SIZE: usize = BLOCK_HEADER_MAGIC.len() + 1;
     pub fn decode_magic(header: [u8; Self::MAGIC_SIZE]) -> io::Result<Option<Self>> {
-        if header[..3] != BLOCK_HEADER_MAGIC {
+        if header[..BLOCK_HEADER_MAGIC.len()] != BLOCK_HEADER_MAGIC {
             return Err(io::Error::new(ErrorKind::InvalidData, "Unexpected block magic bytes"));
         }
-        Ok(BlockType::from_u8(header[3]))
+        Ok(BlockType::from_u8(header[BLOCK_HEADER_MAGIC.len()]))
     }
+
+    pub fn magic(&self) -> [u8; Self::MAGIC_SIZE] {
+        let mut arr = [0; Self::MAGIC_SIZE];
+        arr[..BLOCK_HEADER_MAGIC.len()].copy_from_slice(&BLOCK_HEADER_MAGIC);
+        arr[BLOCK_HEADER_MAGIC.len()] = *self as u8;
+        arr
+    }
+}
+
+pub trait ReadableChunk {
+    type Header;
 }
 
 pub enum AnyBlock {

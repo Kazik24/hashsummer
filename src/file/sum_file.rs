@@ -4,7 +4,7 @@ use crate::utils::with_counted_read;
 use crate::{HashArray, SumFileHeader};
 use std::fs::File;
 use std::io;
-use std::io::{Error, ErrorKind, Read, Seek, Write};
+use std::io::{BufReader, Error, ErrorKind, Read, Seek, Write};
 use std::path::Path;
 
 pub const MAIN_HEADER_MAGIC: [u8; 4] = *b"HsUm";
@@ -24,9 +24,12 @@ pub fn get_codec(version: [u8; 3]) -> Option<&'static dyn VersionCodec> {
     //CODECS.binary_search_by_key(&version, |(v, _)| *v).ok().map(|i| CODECS[i].1)
 }
 
+pub type StdHashArray = HashArray<64>;
+
 pub trait VersionCodec: Send + Sync + 'static {
     fn decode_header_fields(&self, array: HashArray<57>, header: &mut MainHeader) -> io::Result<()>;
     fn decode_additional_header(&self, read: &mut dyn Read, header: &mut MainHeader) -> io::Result<()>;
+    fn decode_block(&self, first_block: StdHashArray, read: &mut dyn Read, header: &MainHeader) -> Result<AnyBlock, BlockError>;
 }
 
 pub struct SumFile<T: Read + Write + Seek> {
@@ -65,7 +68,8 @@ impl MainHeader {
         let rest = main_header.get_slice::<57>(7);
         codec.decode_header_fields(HashArray::new(rest), &mut header)?;
 
-        let (_, count) = with_counted_read(stream, |read| codec.decode_additional_header(read, &mut header))?;
+        let mut count = 0;
+        with_counted_read(stream, &mut count, |read| codec.decode_additional_header(read, &mut header))?;
 
         Ok((header, (main_header.as_bytes().len() as u64) + count))
     }
@@ -89,14 +93,17 @@ pub enum BlockError {
     /// End of block stream
     NoBlock,
     UnknownBlockType,
+    /// You should read file header first, before executing this operation
+    ReadHeaderFirst,
     Io(io::Error),
 }
 
 impl From<BlockError> for io::Error {
     fn from(value: BlockError) -> Self {
         match value {
-            BlockError::NoBlock => io::Error::new(ErrorKind::InvalidData, "No more blocks"),
-            BlockError::UnknownBlockType => io::Error::new(ErrorKind::InvalidData, "Unknown block type"),
+            BlockError::NoBlock => Error::new(ErrorKind::InvalidData, "No more blocks"),
+            BlockError::UnknownBlockType => Error::new(ErrorKind::InvalidData, "Unknown block type"),
+            BlockError::ReadHeaderFirst => Error::new(ErrorKind::InvalidData, "Header has not been read"),
             BlockError::Io(e) => e,
         }
     }
@@ -122,16 +129,17 @@ where
     }
 
     pub fn read_next_block(&mut self) -> Result<AnyBlock, BlockError> {
-        let mut first_chunk = HashArray::<64>::zero();
+        let mut first_chunk = StdHashArray::zero();
         match self.file.read_exact(first_chunk.as_bytes_mut()) {
             Ok(()) => {}
             Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Err(BlockError::NoBlock), //no blocks
             Err(e) => return Err(BlockError::Io(e)),
         }
-
-        let block_type = BlockType::decode_magic(first_chunk.get_slice(0))?.ok_or(BlockError::UnknownBlockType)?;
-
-        todo!()
+        let count = self.current_pos.get_or_insert(0);
+        let block = with_counted_read(&mut self.file, count, |read| {
+            self.main_header.codec.decode_block(first_chunk, read, &self.main_header)
+        })?;
+        Ok(block)
     }
 
     pub fn write_next_block(&mut self, block: &AnyBlock) -> io::Result<()> {

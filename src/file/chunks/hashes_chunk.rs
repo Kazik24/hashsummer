@@ -1,4 +1,5 @@
-use crate::file::chunks::BLOCK_HEADER_MAGIC;
+use crate::file::chunks::{BlockType, BLOCK_HEADER_MAGIC};
+use crate::file::StdHashArray;
 use crate::utils::{BungeeIndex, BungeeStr, MeasureMemory};
 use crate::{DataEntry, HashArray, HashEntry};
 use rustfft::num_traits::ToPrimitive;
@@ -60,7 +61,7 @@ impl_fingerprint! {
     Blake3 => b"Blake3__" or b"BLAKE3__"
 }
 
-struct HashesHeader {
+pub struct HashesHeader {
     size: u64,
     sort: SortOrder,
     name_hash: HashType,
@@ -73,23 +74,25 @@ impl HashesHeader {
 
     pub fn to_array(&self) -> HashArray<64> {
         let mut array = HashArray::zero();
-        array.get_mut()[..BLOCK_HEADER_MAGIC.len()].copy_from_slice(&BLOCK_HEADER_MAGIC);
+        array.set_slice(0, BlockType::Hashes.magic());
         let mut flags = 0;
         flags |= self.sort as u32 & 0x3;
         array.set_u32(4, flags);
         array.set_u64(8, self.size);
         array.set_slice(16, self.name_hash.get_fingerprint());
         array.set_slice(24, self.data_hash.get_fingerprint());
+        //bytes 32..64 are zeroed
         array
     }
-    pub fn read<R: Read>(read: &mut R) -> io::Result<Self> {
+    pub fn read<R: Read + ?Sized>(read: &mut R) -> io::Result<Self> {
         let mut header = HashArray::zero();
         read.read_exact(header.get_mut())?;
         Self::from_array(header)
     }
-    pub fn from_array(array: HashArray<64>) -> io::Result<Self> {
-        if &array.get_ref()[..BLOCK_HEADER_MAGIC.len()] != BLOCK_HEADER_MAGIC {
-            return Err(Error::new(ErrorKind::InvalidData, "Block magic data doesn't match"));
+
+    pub fn from_array(array: StdHashArray) -> io::Result<Self> {
+        if BlockType::decode_magic(array.get_slice(0))? != Some(BlockType::Hashes) {
+            return Err(Error::new(ErrorKind::InvalidData, "Expected 'Hashes' block type"));
         }
         let flags = array.get_u32(4);
         let size = array.get_u64(8);
@@ -124,8 +127,12 @@ impl HashesChunk {
             data_hash: HashType::Sha256,
         }
     }
-    pub fn read<R: Read>(read: &mut R) -> io::Result<Self> {
+
+    pub fn read<R: Read + ?Sized>(read: &mut R) -> io::Result<Self> {
         let header = HashesHeader::read(read)?;
+        Self::read_body(header, read)
+    }
+    pub fn read_body<R: Read + ?Sized>(header: HashesHeader, read: &mut R) -> io::Result<Self> {
         if header.size > u32::MAX as _ {
             return Err(Error::new(
                 ErrorKind::Unsupported,
