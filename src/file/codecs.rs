@@ -1,4 +1,4 @@
-use crate::file::chunks::{AnyBlock, BlockType, HashesChunk, HashesHeader};
+use crate::file::chunks::{AnyBlock, BlockType, HashesChunk, HashesHeader, NamesChunk, NamesHeader};
 use crate::file::codec_utils::read_first_data_chunk;
 use crate::file::{BlockError, MainHeader, StdHashArray, VersionCodec};
 use crate::HashArray;
@@ -30,6 +30,11 @@ impl VersionCodec for Codec0_0_1 {
                 let header = HashesHeader::from_array(first_block)?;
                 let chunk = HashesChunk::read_body(header, read)?;
                 Ok(AnyBlock::Hashes(chunk))
+            }
+            BlockType::Names => {
+                let header = NamesHeader::from_array(first_block)?;
+                let chunk = NamesChunk::read_body(header, read)?;
+                Ok(AnyBlock::Names(chunk))
             }
 
             _ => Err(BlockError::UnknownBlockType),

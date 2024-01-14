@@ -13,7 +13,7 @@ pub fn snapshot_files(path: &Path) {
     let paths = {
         let mut pb = path_buffer.lock_arc();
         let mut pi = path_indexes.lock_arc();
-        DepthFileScanner::from_dir(path)
+        DepthFileScanner::from_dir(path, true)
             .save_to_bungee(move |a, b| pb.push(a, b), |v, t| Some(v.to_string_lossy()))
             .into_iter()
             .filter_map(|(i, d, t)| Some((t.is_file().then_some(i).flatten()?, d, i)))
@@ -66,7 +66,7 @@ pub struct FileCounts {
 impl FileCounts {
     pub fn count_all_in(path: &Path) -> Self {
         let mut files = FileCounts::default();
-        for (entry, typ) in DepthFileScanner::from_dir(path).into_iter() {
+        for (entry, typ) in DepthFileScanner::from_dir(path, true).into_iter() {
             if typ.is_file() {
                 files.files += 1;
                 match entry.metadata() {

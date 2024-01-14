@@ -2,34 +2,62 @@ use crate::utils::{BungeeIndex, BungeeStr};
 use compress::bwt::*;
 use flate2::Compression;
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Display, Formatter};
 use std::fs::{read_dir, DirEntry, FileType, ReadDir};
+use std::io;
 use std::io::Write;
 use std::iter::once;
 use std::path::{Path, PathBuf};
+use std::ptr::null;
 
 pub struct DepthFileScanner {
     root: PathBuf,
     current: Vec<OsString>,
-    stack: Vec<ReadDir>,
+    stack: StackVariant,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum SortType {
+    /// ITERATOR (not stack!) will yield elements in ascending order (this means that for stack it's descending order)
+    Ascending,
+    /// Unknown ordering
+    None,
+    /// ITERATOR (not stack!) will yield elements in descending order (this means that for stack it's ascending order)
+    Descending,
+}
+
+enum StackVariant {
+    Fresh(Vec<ReadDir>),
+    Cached {
+        stack: Vec<Vec<io::Result<DirEntry>>>,
+        sort: SortType,
+    },
 }
 
 impl DepthFileScanner {
     //todo multi root
-    pub fn from_dir<P: AsRef<Path>>(path: P) -> Self {
+    pub fn from_dir<P: AsRef<Path>>(path: P, keep_dir_open: bool) -> Self {
+        let root = path.as_ref().to_path_buf();
+        let mut stack = StackVariant::new(keep_dir_open);
+        if let Ok(iter) = read_dir(path) {
+            stack.push(iter);
+        }
         Self {
-            root: path.as_ref().to_path_buf(),
+            root,
+            stack,
             current: Vec::new(),
-            stack: read_dir(path).ok().into_iter().collect(),
         }
     }
 
-    pub fn reset_from_dir<P: AsRef<Path>>(&mut self, path: P) {
+    pub fn reset_from_dir<P: AsRef<Path>>(&mut self, path: P, keep_dir_open: bool) {
         self.root = path.as_ref().to_path_buf();
         self.current.clear();
-        self.stack.clear();
-        self.stack.extend(read_dir(path).ok());
+        self.stack.clear(keep_dir_open);
+        if let Ok(iter) = read_dir(path) {
+            self.stack.push(iter);
+        }
     }
 
     pub fn into_iter(self) -> impl Iterator<Item = (DirEntry, FileType)> {
@@ -66,6 +94,88 @@ impl DepthFileScanner {
             bungee_push,
             dirs: Vec::new(),
             name_convert: conv,
+        }
+    }
+}
+
+impl StackVariant {
+    pub const DEFAUL_SORT: SortType = SortType::Ascending;
+
+    pub fn new(keep_dir_open: bool) -> Self {
+        if keep_dir_open {
+            Self::Fresh(Vec::new())
+        } else {
+            Self::Cached {
+                stack: Vec::new(),
+                sort: Self::DEFAUL_SORT,
+            }
+        }
+    }
+    pub fn pop(&mut self) {
+        match self {
+            Self::Fresh(v) => _ = v.pop(),
+            Self::Cached { stack, .. } => _ = stack.pop(),
+        }
+    }
+    pub fn push(&mut self, iter: ReadDir) {
+        match self {
+            Self::Fresh(v) => v.push(iter),
+            Self::Cached { stack, sort } => {
+                let mut files = iter.collect::<Vec<_>>();
+                match sort {
+                    SortType::Ascending => files.sort_unstable_by(|a, b| Self::compare_entries(a, b).reverse()), //stack is descending for ascending type
+                    SortType::Descending => files.sort_unstable_by(Self::compare_entries), //stack is ascending for descending type
+                    SortType::None => {}
+                }
+                stack.push(files);
+            }
+        }
+    }
+    fn compare_entries(a: &io::Result<DirEntry>, b: &io::Result<DirEntry>) -> Ordering {
+        match (a, b) {
+            (Ok(a), Ok(b)) => a.path().cmp(&b.path()),
+            (Ok(_), Err(_)) => Ordering::Less,    // all ok should be before any errors
+            (Err(_), Ok(_)) => Ordering::Greater, // all ok should be before any errors
+            (Err(a), Err(b)) => a.kind().cmp(&b.kind()).then_with(|| {
+                //compare pointers to payload just to have some stable ordering, real order doesn't really matter
+                let a = a.get_ref().map(|v| (v as *const dyn std::error::Error).cast::<()>());
+                let b = b.get_ref().map(|v| (v as *const dyn std::error::Error).cast::<()>());
+                a.unwrap_or(null()).cmp(&b.unwrap_or(null()))
+            }),
+        }
+    }
+    pub fn clear(&mut self, keep_dir_open: bool) {
+        match self {
+            Self::Fresh(v) if keep_dir_open => v.clear(),
+            Self::Fresh(v) => {
+                *self = Self::Cached {
+                    stack: Vec::new(),
+                    sort: Self::DEFAUL_SORT,
+                }
+            }
+            Self::Cached { stack, .. } if !keep_dir_open => stack.clear(),
+            Self::Cached { stack, .. } => *self = Self::Fresh(Vec::new()),
+        }
+    }
+    pub fn last_iter(&mut self) -> Option<TempIter> {
+        match self {
+            Self::Fresh(v) => v.last_mut().map(TempIter::Fresh),
+            Self::Cached { stack, .. } => stack.last_mut().map(TempIter::Cached),
+        }
+    }
+}
+
+enum TempIter<'a> {
+    Fresh(&'a mut ReadDir),
+    Cached(&'a mut Vec<io::Result<DirEntry>>),
+}
+impl Iterator for TempIter<'_> {
+    type Item = io::Result<DirEntry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Fresh(v) => v.next(),
+            Self::Cached(v) => v.pop(),
         }
     }
 }
@@ -128,7 +238,7 @@ pub trait FileScanner {
 impl FileScanner for DepthFileScanner {
     fn next_file(&mut self) -> Option<FileEntry> {
         loop {
-            let iter = self.stack.last_mut()?;
+            let iter = self.stack.last_iter()?;
             for entry in iter {
                 let Ok(entry) = entry else {
                     continue;
@@ -164,8 +274,8 @@ impl FileScanner for DepthFileScanner {
     }
 }
 
-pub fn depth_first_files<P: AsRef<Path>>(path: P) -> DepthFileScanner {
-    DepthFileScanner::from_dir(path)
+pub fn depth_first_files<P: AsRef<Path>>(path: P, keep_dir_open: bool) -> DepthFileScanner {
+    DepthFileScanner::from_dir(path, keep_dir_open)
 }
 
 pub struct SaveToBungee<F, S> {
@@ -184,7 +294,7 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let iter = self.it.stack.last_mut()?;
+            let iter = self.it.stack.last_iter()?;
             let prev = self.dirs.last().copied().flatten();
             for elem in iter {
                 let Ok(elem) = elem else {
@@ -257,7 +367,7 @@ mod tests {
     fn test_list_files() {
         let path = Path::new(".");
 
-        let mut scanner = DepthFileScanner::from_dir(path);
+        let mut scanner = DepthFileScanner::from_dir(path, true);
         let paths = scanner
             .iter()
             .filter(|(_, ty)| ty.is_file())
@@ -281,7 +391,7 @@ mod tests {
     #[test]
     fn test_file_scanner() {
         let path = Path::new(".");
-        let mut scanner = DepthFileScanner::from_dir(path);
+        let mut scanner = DepthFileScanner::from_dir(path, true);
         while let Some(entry) = scanner.next_file() {
             println!("{entry}");
         }
@@ -292,7 +402,7 @@ mod tests {
         let path = Path::new("D:\\dev");
 
         println!("Scanning path: {:?}", path);
-        let paths = DepthFileScanner::from_dir(path)
+        let paths = DepthFileScanner::from_dir(path, true)
             .into_iter()
             .filter(|(_, ty)| ty.is_file())
             .map(|(d, _)| d.path());
@@ -430,7 +540,7 @@ mod tests {
         println!("Scanning path: {:?}", path);
         let mut bungee = BungeeStr::new();
         let mut path_len = 0;
-        let paths = DepthFileScanner::from_dir(path)
+        let paths = DepthFileScanner::from_dir(path, true)
             .save_to_bungee(|a, b| bungee.push(a, b), |n, _| Some(n.to_string_lossy()))
             .inspect(|v| path_len += v.1.path().as_os_str().len())
             .filter_map(|(i, _, ty)| ty.is_file().then_some(i).flatten())
@@ -466,7 +576,7 @@ mod tests {
 
     fn file_names_hashed(path: impl AsRef<Path>) -> (BungeeStr, Vec<(BungeeIndex, HashArray<32>)>) {
         let mut bungee = BungeeStr::new();
-        let files = depth_first_files(path)
+        let files = depth_first_files(path, true)
             .save_to_bungee(|a, b| bungee.push(a, b), |n, _| Some(n.to_string_lossy()))
             .filter_map(|(i, e, ty)| Some((ty.is_file().then_some(i).flatten()?, e)))
             .map(|(i, entry)| {
