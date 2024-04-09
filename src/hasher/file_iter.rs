@@ -1,6 +1,7 @@
 use crate::utils::{BungeeIndex, BungeeStr};
 use compress::bwt::*;
 use flate2::Compression;
+use rayon::vec::IntoIter;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::ffi::{OsStr, OsString};
@@ -60,18 +61,6 @@ impl DepthFileScanner {
         }
     }
 
-    pub fn into_iter(self) -> impl Iterator<Item = (DirEntry, FileType)> {
-        struct Iter(DepthFileScanner);
-        impl Iterator for Iter {
-            type Item = (DirEntry, FileType);
-
-            fn next(&mut self) -> Option<Self::Item> {
-                self.0.next_file().map(|f| (f.entry, f.file_type))
-            }
-        }
-        Iter(self)
-    }
-
     pub fn iter(&mut self) -> impl Iterator<Item = (DirEntry, FileType)> + '_ {
         struct Iter<'a>(&'a mut DepthFileScanner);
         impl Iterator for Iter<'_> {
@@ -84,7 +73,7 @@ impl DepthFileScanner {
         Iter(self)
     }
 
-    pub fn save_to_bungee<'a, F, S>(self, bungee_push: S, conv: F) -> SaveToBungee<F, S>
+    pub fn save_to_bungee<F, S>(self, bungee_push: S, conv: F) -> SaveToBungee<F, S>
     where
         F: FnMut(&OsStr, FileType) -> Option<Cow<'_, str>>,
         S: FnMut(Option<BungeeIndex>, &str) -> Option<BungeeIndex>,
@@ -95,6 +84,23 @@ impl DepthFileScanner {
             dirs: Vec::new(),
             name_convert: conv,
         }
+    }
+}
+
+pub struct IterDepthFileScanner(DepthFileScanner);
+impl Iterator for IterDepthFileScanner {
+    type Item = (DirEntry, FileType);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next_file().map(|f| (f.entry, f.file_type))
+    }
+}
+
+impl IntoIterator for DepthFileScanner {
+    type Item = (DirEntry, FileType);
+    type IntoIter = IterDepthFileScanner;
+    fn into_iter(self) -> IterDepthFileScanner {
+        IterDepthFileScanner(self)
     }
 }
 
@@ -444,7 +450,7 @@ mod tests {
         //println!("Found zero chunks in: {:#?}", cons.chunks.lock());
 
         let mut vals = mutex.lock();
-        let mut vals = HashesChunk::new_sha256(replace(&mut *vals, Vec::new()), false);
+        let mut vals = HashesChunk::new_sha256(std::mem::take(&mut *vals), false);
         println!(
             "Processed: {}, total: {:.3} ({} bytes)",
             vals.data.len(),

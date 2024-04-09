@@ -10,6 +10,12 @@ pub struct SumFileHeader {
     array: [u8; 64],
 }
 
+impl Default for SumFileHeader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SumFileHeader {
     pub fn new() -> Self {
         Self { array: todo!() }

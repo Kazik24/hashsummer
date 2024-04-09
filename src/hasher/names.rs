@@ -43,6 +43,12 @@ pub trait NamesStorage {
     }
 }
 
+impl Default for FileNames {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FileNames {
     pub fn new() -> Self {
         Self { string: String::new() }

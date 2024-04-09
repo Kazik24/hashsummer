@@ -27,6 +27,12 @@ pub trait EventDispatcher {
     fn dispatch(&mut self, event: Event);
 }
 
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl App {
     pub fn new() -> Self {
         Self {
@@ -45,9 +51,8 @@ impl App {
             if event::poll(timeout)? {
                 let event = event::read()?;
                 if let Event::Key(key) = &event {
-                    match key.code {
-                        KeyCode::Char('q') => break,
-                        _ => {}
+                    if key.code == KeyCode::Char('q') {
+                        break;
                     }
                 }
                 app.on_event(event);

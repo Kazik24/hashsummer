@@ -80,7 +80,7 @@ impl Debug for ByteSize {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let (frac, prefix) = match self.0 {
             v if v < 1024 => (v as f64, ""),
-            v if v < 1024u64.pow(2) => (v as f64 / 1024u64 as f64, "K"),
+            v if v < 1024u64.pow(2) => (v as f64 / 1024_f64, "K"),
             v if v < 1024u64.pow(3) => (v as f64 / 1024u64.pow(2) as f64, "M"),
             v if v < 1024u64.pow(4) => (v as f64 / 1024u64.pow(3) as f64, "G"),
             v if v < 1024u64.pow(5) => (v as f64 / 1024u64.pow(4) as f64, "T"),

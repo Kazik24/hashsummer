@@ -44,6 +44,12 @@ pub struct MainHeader {
     flags: u8,
 }
 
+impl Default for MainHeader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MainHeader {
     pub fn new() -> Self {
         Self {

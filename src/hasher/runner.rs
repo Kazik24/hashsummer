@@ -141,7 +141,7 @@ impl ScanRunner {
             read_bytes: cfg.read_bytes_stats.unwrap_or_default(),
             permits: Arc::new(Permits::new(cfg.permits)),
             max_permits: cfg.permits,
-            data_chunks: LendingStack::new(repeat_with(|| ChunkData::zero()).take(cfg.max_buffer_chunks.max(1)).collect()),
+            data_chunks: LendingStack::new(repeat_with(ChunkData::zero).take(cfg.max_buffer_chunks.max(1)).collect()),
         });
 
         let cfg = Config {
@@ -221,6 +221,7 @@ impl ScanRunner {
         stats: Arc<AveragePerTick>,
     ) -> io::Result<()> {
         let mut file = File::open(path)?;
+        //todo handle `too mutch open files` error
         loop {
             let mut chunk = supply.lend();
             if chunk.capacity() < chunk_size {
