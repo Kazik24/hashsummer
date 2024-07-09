@@ -32,10 +32,36 @@ pub enum BlockType {
 impl BlockType {
     pub const MAGIC_SIZE: usize = BLOCK_HEADER_MAGIC.len() + 1;
     pub fn decode_magic(header: [u8; Self::MAGIC_SIZE]) -> io::Result<Option<Self>> {
-        if header[..BLOCK_HEADER_MAGIC.len()] != BLOCK_HEADER_MAGIC {
-            return Err(io::Error::new(ErrorKind::InvalidData, "Unexpected block magic bytes"));
+        Ok(BlockType::from_u8(Self::decode_magic_code(header)?))
+    }
+
+    fn decode_magic_code(header: [u8; Self::MAGIC_SIZE]) -> io::Result<u8> {
+        let header_bytes = &header[..BLOCK_HEADER_MAGIC.len()];
+        if header_bytes != BLOCK_HEADER_MAGIC {
+            let bytes = header_bytes
+                .iter()
+                .flat_map(|c| c.escape_ascii())
+                .map(|c| c as char)
+                .collect::<String>();
+            let msg = format!("Unexpected block magic prefix bytes '{bytes}'");
+            return Err(io::Error::new(ErrorKind::InvalidData, msg));
         }
-        Ok(BlockType::from_u8(header[BLOCK_HEADER_MAGIC.len()]))
+        Ok(header[BLOCK_HEADER_MAGIC.len()])
+    }
+
+    pub fn require_magic(self, header: [u8; Self::MAGIC_SIZE]) -> io::Result<()> {
+        let code = Self::decode_magic_code(header)?;
+        match Self::from_u8(code) {
+            None => Err(io::Error::new(
+                ErrorKind::InvalidData,
+                format!("Expected {self:?} block type, but got unsupported code: 0x{code:x}"),
+            )),
+            Some(ty) if ty != self => Err(io::Error::new(
+                ErrorKind::InvalidData,
+                format!("Expected {self:?} block type, but got {ty:?}"),
+            )),
+            Some(_) => Ok(()),
+        }
     }
 
     pub fn magic(&self) -> [u8; Self::MAGIC_SIZE] {

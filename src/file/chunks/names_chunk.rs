@@ -20,9 +20,7 @@ pub struct NamesHeader {
 
 impl NamesHeader {
     pub fn from_array(array: StdHashArray) -> io::Result<Self> {
-        if BlockType::decode_magic(array.get_slice(0))? != Some(BlockType::Names) {
-            return Err(Error::new(ErrorKind::InvalidData, "Expected 'Names' block type"));
-        }
+        BlockType::Names.require_magic(array.get_slice(0))?;
         let flags = array.get_u32(4);
         let bungee_size = array.get_u64(8);
         let bungee_entry_count = array.get_u64(16);

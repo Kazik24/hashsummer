@@ -91,9 +91,7 @@ impl HashesHeader {
     }
 
     pub fn from_array(array: StdHashArray) -> io::Result<Self> {
-        if BlockType::decode_magic(array.get_slice(0))? != Some(BlockType::Hashes) {
-            return Err(Error::new(ErrorKind::InvalidData, "Expected 'Hashes' block type"));
-        }
+        BlockType::Hashes.require_magic(array.get_slice(0))?;
         let flags = array.get_u32(4);
         let size = array.get_u64(8);
         let sort = match flags & 0x3 {
