@@ -6,6 +6,7 @@ mod sum_file;
 use digest::{Digest, FixedOutputReset};
 use generic_array::GenericArray;
 use parking_lot::Mutex;
+use std::io::{Read, Write};
 use std::marker::PhantomData;
 use std::mem::{align_of, transmute};
 use std::ops::Index;
@@ -322,6 +323,7 @@ impl<const N: usize> Ord for HashArray<N> {
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
         for (a, b) in self.aligned_data_chunks(other).rev() {
+            //todo convert to correct endianness to avoid different result on different platforms
             let res = a.cmp(&b);
             if res.is_ne() {
                 return res;
@@ -394,6 +396,44 @@ pub trait Consumer {
     }
 }
 
+pub trait FileIo: Sized {
+    type ReadFile: Read;
+    type WriteFile: Write;
+
+    fn open_read(path: &Path) -> io::Result<Self::ReadFile>;
+    fn open_write(path: &Path) -> io::Result<Self::WriteFile>;
+    fn delete_file(path: &Path) -> io::Result<bool>;
+    fn file_exists(path: &Path) -> io::Result<bool>;
+
+    fn read_only() -> ReadOnlyFileIo<Self> {
+        ReadOnlyFileIo::new()
+    }
+}
+
+pub struct ReadOnlyFileIo<T: FileIo>(PhantomData<T>);
+impl<T: FileIo> ReadOnlyFileIo<T> {
+    pub fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+impl<T: FileIo> FileIo for ReadOnlyFileIo<T> {
+    type ReadFile = T::ReadFile;
+    type WriteFile = std::io::Empty;
+
+    fn open_read(path: &Path) -> io::Result<Self::ReadFile> {
+        T::open_read(path)
+    }
+    fn open_write(path: &Path) -> io::Result<Self::WriteFile> {
+        Ok(std::io::empty())
+    }
+    fn delete_file(path: &Path) -> io::Result<bool> {
+        Ok(false)
+    }
+    fn file_exists(path: &Path) -> io::Result<bool> {
+        T::file_exists(path)
+    }
+}
+
 pub struct DigestConsumer<const ID: usize, const DATA: usize, D: Digest, F: Fn(HashEntry<ID, DATA>)> {
     consume: F,
     total_bytes: AtomicU64,
@@ -444,9 +484,38 @@ impl<const ID: usize, const DATA: usize, D: Digest, F: Fn(HashEntry<ID, DATA>)> 
     }
 }
 
+pub struct StdFileIo;
+
+impl FileIo for StdFileIo {
+    type ReadFile = std::fs::File;
+    type WriteFile = std::fs::File;
+
+    fn open_read(path: &Path) -> io::Result<Self::ReadFile> {
+        std::fs::File::open(path)
+    }
+    fn open_write(path: &Path) -> io::Result<Self::WriteFile> {
+        std::fs::File::create(path)
+    }
+    fn delete_file(path: &Path) -> io::Result<bool> {
+        Ok(std::fs::remove_file(path).is_ok())
+    }
+    fn file_exists(path: &Path) -> io::Result<bool> {
+        Ok(path.exists())
+    }
+}
+
 pub struct HashZeroChunksFinder {
     pub min_size: u64,
     pub chunks: Mutex<Vec<PathBuf>>,
+}
+
+impl HashZeroChunksFinder {
+    pub fn new(min_size: u64) -> Self {
+        Self {
+            min_size,
+            chunks: Default::default(),
+        }
+    }
 }
 
 impl Consumer for HashZeroChunksFinder {

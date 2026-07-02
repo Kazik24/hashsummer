@@ -30,7 +30,7 @@ pub trait NamesStorage {
     }
     fn total_len(&self) -> usize;
 
-    fn with_collected<I>(&mut self, it: I) -> WithCollected<I::IntoIter, Self>
+    fn with_collected<I>(&mut self, it: I) -> WithCollected<'_, I::IntoIter, Self>
     where
         Self: Sized,
         I: IntoIterator,

@@ -38,8 +38,35 @@ pub struct AveragePerTick {
 
 #[derive(Default)]
 struct MovingAvg {
-    array: Box<[u64]>,
+    array: Vec<u64>,
     index: usize,
+}
+
+impl MovingAvg {
+    fn get_avg(&self) -> u64 {
+        let slice = &self.array[..min(self.array.len(), self.index)];
+        if slice.is_empty() {
+            return 0;
+        }
+        let sum = slice.iter().fold(0, |acc, v| acc + *v as u128);
+        let avg = sum / slice.len() as u128;
+        avg as u64
+    }
+
+    fn append_sample(&mut self, collected: u64) {
+        if self.array.is_empty() {
+            return;
+        }
+        let size = self.array.len();
+        let size2 = size * 2 - 1;
+        let idx = self.index;
+        if idx >= size2 {
+            self.index = size;
+        } else {
+            self.index = idx + 1;
+        }
+        self.array[idx % size] = collected;
+    }
 }
 
 impl AveragePerTick {
@@ -49,11 +76,32 @@ impl AveragePerTick {
             current: AtomicU64::new(0),
             ticks: RwLock::new(MovingAvg {
                 index: 0,
-                array: vec![0; window].into_boxed_slice(),
+                array: vec![0; window],
             }),
         }
     }
 
+    pub const fn empty() -> Self {
+        Self {
+            current: AtomicU64::new(0),
+            ticks: RwLock::new(MovingAvg {
+                index: 0,
+                array: Vec::new(),
+            }),
+        }
+    }
+
+    pub fn reset_window_size(&self, window: usize) {
+        let mut lock = self.ticks.write();
+        lock.index = 0;
+        lock.array = vec![0; window];
+    }
+
+    #[inline]
+    pub fn append_one(&self) {
+        self.append(1);
+    }
+    #[inline]
     pub fn append(&self, value: u64) {
         self.current.fetch_add(value, Ordering::Relaxed);
     }
@@ -63,37 +111,19 @@ impl AveragePerTick {
     /// result of this function by 10 to get average per second, and this average will have refresh
     /// rate of 10 times/sec
     pub fn get_avg(&self) -> u64 {
-        let lock = self.ticks.read();
-
-        let slice = &lock.array[..min(lock.array.len(), lock.index)];
-        if slice.is_empty() {
-            return 0;
-        }
-        let sum = slice.iter().fold(0, |acc, v| acc + *v as u128);
-        let avg = sum / slice.len() as u128;
-        avg as u64
+        self.ticks.read().get_avg()
     }
 
     pub fn sample_now(&self) {
         let collected = self.current.swap(0, Ordering::Relaxed);
-        let mut lock = self.ticks.write();
-        if lock.array.is_empty() {
-            return;
-        }
-        let size = lock.array.len();
-        let size2 = size * 2 - 1;
-        let idx = lock.index;
-        if idx >= size2 {
-            lock.index = size;
-        } else {
-            lock.index = idx + 1;
-        }
-        lock.array[idx % size] = collected;
+        self.ticks.write().append_sample(collected);
     }
 
     pub fn sample_and_get_avg(&self) -> u64 {
-        self.sample_now();
-        self.get_avg()
+        let collected = self.current.swap(0, Ordering::Relaxed);
+        let mut lock = self.ticks.write();
+        lock.append_sample(collected);
+        lock.get_avg()
     }
 
     pub fn reset(&self) {
@@ -119,11 +149,11 @@ mod tests {
         spawn(move || {
             let start = Instant::now();
             while start.elapsed() < Duration::from_secs(5) {
-                c.append(1);
+                c.append_one();
             }
 
             while start.elapsed() < Duration::from_secs(15) {
-                c.append(1);
+                c.append_one();
                 let s = Instant::now();
                 while s.elapsed() <= Duration::from_millis(1) {
                     yield_now()

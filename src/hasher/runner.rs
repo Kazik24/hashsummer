@@ -16,6 +16,7 @@ use std::{
 
 use crate::hasher::{Consumer, DataChunk, HashArray, HashEntry};
 use crate::utils::{AveragePerTick, LendingStack, MeasureMemory};
+use crate::{FileIo, StdFileIo};
 use crossbeam::queue::ArrayQueue;
 use digest::{Digest, FixedOutputReset};
 use generic_array::GenericArray;

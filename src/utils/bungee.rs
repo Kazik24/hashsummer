@@ -96,7 +96,7 @@ impl<T: OffsetInt> BungeeBytes<T> {
         (data, prev)
     }
 
-    pub fn reverse_follow_iter(&self, at: BungeeIndex) -> BungeeFollowIter<T> {
+    pub fn reverse_follow_iter(&self, at: BungeeIndex) -> BungeeFollowIter<'_, T> {
         BungeeFollowIter {
             parent: self,
             last: Some(at),
@@ -287,7 +287,7 @@ impl BungeeStr {
         (from_utf8(data).unwrap(), prev)
     }
 
-    pub fn reverse_follow_iter(&self, at: BungeeIndex) -> BungeeStrFollowIter {
+    pub fn reverse_follow_iter(&self, at: BungeeIndex) -> BungeeStrFollowIter<'_> {
         BungeeStrFollowIter {
             inner: self.inner.reverse_follow_iter(at),
         }

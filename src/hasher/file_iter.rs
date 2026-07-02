@@ -10,6 +10,7 @@ use std::fs::{read_dir, DirEntry, FileType, ReadDir};
 use std::io;
 use std::io::Write;
 use std::iter::once;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::ptr::null;
 
@@ -67,7 +68,7 @@ impl DepthFileScanner {
             type Item = (DirEntry, FileType);
 
             fn next(&mut self) -> Option<Self::Item> {
-                self.0.next_file().map(|f| (f.entry, f.file_type))
+                self.0.next_file().and_then(|v| v.ok()).map(|f| (f.entry, f.file_type))
             }
         }
         Iter(self)
@@ -92,7 +93,7 @@ impl Iterator for IterDepthFileScanner {
     type Item = (DirEntry, FileType);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.next_file().map(|f| (f.entry, f.file_type))
+        self.0.next_file().and_then(|v| v.ok()).map(|f| (f.entry, f.file_type))
     }
 }
 
@@ -163,7 +164,7 @@ impl StackVariant {
             Self::Cached { stack, .. } => *self = Self::Fresh(Vec::new()),
         }
     }
-    pub fn last_iter(&mut self) -> Option<TempIter> {
+    pub fn last_iter(&mut self) -> Option<TempIter<'_>> {
         match self {
             Self::Fresh(v) => v.last_mut().map(TempIter::Fresh),
             Self::Cached { stack, .. } => stack.last_mut().map(TempIter::Cached),
@@ -238,50 +239,67 @@ impl FileEntry<'_> {
 }
 
 pub trait FileScanner {
-    fn next_file(&mut self) -> Option<FileEntry>;
+    fn next_file(&mut self) -> Option<io::Result<FileEntry<'_>>> {
+        let this = self as *mut Self;
+        loop {
+            // SAFETY: this is a borrow checker being overly cautious,
+            // we know that we don't keep references from one iteration to next
+            // remove unsafe when more sophisticated borrow checker arrives
+            let this = unsafe { &mut *this };
+
+            let ControlFlow::Break(v) = this.next_file_loop() else {
+                continue;
+            };
+
+            return v;
+        }
+    }
+
+    fn next_file_loop(&mut self) -> ControlFlow<Option<io::Result<FileEntry<'_>>>>;
 }
 
 impl FileScanner for DepthFileScanner {
-    fn next_file(&mut self) -> Option<FileEntry> {
-        loop {
-            let iter = self.stack.last_iter()?;
-            for entry in iter {
-                let Ok(entry) = entry else {
-                    continue;
-                };
-                let Ok(file_type) = entry.file_type() else {
-                    continue;
-                };
-                let mut dir_name = None;
-                let before_name = if file_type.is_dir() {
-                    if let Ok(iter) = read_dir(entry.path()) {
+    fn next_file_loop(&mut self) -> ControlFlow<Option<io::Result<FileEntry<'_>>>> {
+        let iter = match self.stack.last_iter() {
+            Some(iter) => iter,
+            None => return ControlFlow::Break(None),
+        };
+        for entry in iter {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => return ControlFlow::Break(Some(Err(err))),
+            };
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(err) => return ControlFlow::Break(Some(Err(err))),
+            };
+            let mut dir_name = None;
+            let before_name = if file_type.is_dir() {
+                match read_dir(entry.path()) {
+                    Ok(iter) => {
                         self.current.push(entry.file_name());
                         self.stack.push(iter);
                         dir_name = self.current.last().map(|v| v.as_os_str());
                         &self.current[..(self.current.len() - 1)]
-                    } else {
-                        self.current.as_slice()
                     }
-                } else {
-                    self.current.as_slice()
-                };
+                    Err(err) => return ControlFlow::Break(Some(Err(err))),
+                }
+            } else {
+                self.current.as_slice()
+            };
 
-                return Some(FileEntry {
-                    root: &self.root,
-                    before_name,
-                    dir_name,
-                    file_type,
-                    entry,
-                });
-            }
-            self.stack.pop();
-            self.current.pop();
+            return ControlFlow::Break(Some(Ok(FileEntry {
+                root: &self.root,
+                before_name,
+                dir_name,
+                file_type,
+                entry,
+            })));
         }
+        self.stack.pop();
+        self.current.pop();
+        ControlFlow::Continue(())
     }
-}
-
-pub fn depth_first_files<P: AsRef<Path>>(path: P, keep_dir_open: bool) -> DepthFileScanner {
-    DepthFileScanner::from_dir(path, keep_dir_open)
 }
 
 pub struct SaveToBungee<F, S> {
@@ -342,6 +360,10 @@ fn compress_text(text: &[u8], use_burrows_wheeler: bool) -> Vec<u8> {
     zip.flush_finish().unwrap()
 }
 
+pub struct BreadthFileScanner {
+    breadth_stack: Vec<Vec<(OsString, DirEntry)>>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,7 +421,7 @@ mod tests {
         let path = Path::new(".");
         let mut scanner = DepthFileScanner::from_dir(path, true);
         while let Some(entry) = scanner.next_file() {
-            println!("{entry}");
+            println!("{entry:?}");
         }
     }
 
@@ -418,9 +440,9 @@ mod tests {
         let cons = {
             let mutex = mutex.clone();
             let hash_stats = hash_stats.clone();
-            Arc::new(DigestConsumer::<32, 32, Sha256, _>::new(move |value| {
+            Arc::new(DigestConsumer::<32, 32, blake3::Hasher, _>::new(move |value| {
                 mutex.lock().push(value);
-                hash_stats.append(1);
+                hash_stats.append_one();
             }))
             // Arc::new(HashZeroChunksFinder {
             //     min_size: 16000,
@@ -552,9 +574,9 @@ mod tests {
             .filter_map(|(i, _, ty)| ty.is_file().then_some(i).flatten())
             .collect::<Vec<_>>();
 
-        println!("Paths: ({}){:?}", paths.len(), paths);
+        //println!("Paths: ({}){:?}", paths.len(), paths);
         let names = paths.iter().map(|v| bungee.path_of("/", *v)).collect::<Vec<_>>();
-        println!("Recovered paths: {:#?}", names);
+        //println!("Recovered paths: {:#?}", names);
         println!("Bungee size: {}", bungee.raw_bytes().len());
 
         let compressed = compress_text(bungee.raw_bytes(), false);
@@ -582,7 +604,7 @@ mod tests {
 
     fn file_names_hashed(path: impl AsRef<Path>) -> (BungeeStr, Vec<(BungeeIndex, HashArray<32>)>) {
         let mut bungee = BungeeStr::new();
-        let files = depth_first_files(path, true)
+        let files = DepthFileScanner::from_dir(path, true)
             .save_to_bungee(|a, b| bungee.push(a, b), |n, _| Some(n.to_string_lossy()))
             .filter_map(|(i, e, ty)| Some((ty.is_file().then_some(i).flatten()?, e)))
             .map(|(i, entry)| {
@@ -594,6 +616,49 @@ mod tests {
             .collect::<Vec<_>>();
         println!("Bungee size: {}", bungee.raw_bytes().len());
         (bungee, files)
+    }
+
+    #[test]
+    pub fn find_zero_chunks() {
+        let path = Path::new("D:\\");
+
+        println!("Scanning path: {:?}", path);
+        let mut bungee = BungeeStr::new();
+        let mut path_len = 0;
+        let paths = DepthFileScanner::from_dir(path, true)
+            .into_iter()
+            .inspect(|v| path_len += v.0.path().as_os_str().len())
+            .filter_map(|(i, ty)| ty.is_file().then_some(i))
+            .map(|v| v.path())
+            .collect::<Vec<_>>();
+
+        println!("Paths count: {}", paths.len());
+
+        let hash_stats = Arc::new(AveragePerTick::new(3));
+        let cons = Arc::new(HashZeroChunksFinder::new(1024 * 16)); // find ssd failed blocks
+
+        let reads = Arc::new(AveragePerTick::new(3));
+        let mut cfg = RunnerConfig::new(256, Some(reads.clone()));
+        //warning: antivirus might significantly slow this down regardless of config, better to disable it
+        cfg.drive_type = DriveType::Ssd;
+        cfg.max_buffer_chunks = 4096;
+        cfg.buffer_chunk_size = 1024 * 256;
+        cfg.max_buffer_chunks_per_file = 32; //todo when this is too large, and buffer_chunk_size is too small, the runner halts
+        let runner = ScanRunner::run(paths.into_iter(), cons.clone(), cfg);
+        loop {
+            sleep(Duration::from_millis(1000));
+            let avg_hashes = hash_stats.sample_and_get_avg();
+            let avg_reads = ByteSize(reads.sample_and_get_avg());
+            println!("Avg Hash/s = {avg_hashes:<9} reads = {avg_reads:<9.3}/s",);
+            if runner.is_finished() {
+                break;
+            }
+        }
+
+        let paths = cons.chunks.lock();
+        println!("Paths count: {}", paths.len());
+
+        println!("Top paths {:#?}", &paths[..paths.len().min(100)])
     }
 
     #[test]
